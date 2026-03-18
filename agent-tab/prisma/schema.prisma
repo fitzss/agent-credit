@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Provider {
+  id                  String        @id @default(uuid())
+  name                String
+  publicKey           String        @default("")
+  privateKey          String        @default("")
+  settlementPrefs     String        @default("manual")
+  defaultDueDays      Int           @default(30)
+  status              String        @default("active")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  tools               Tool[]
+  creditLines         CreditLine[]
+  obligationStates    ObligationState[]
+  usageEvents         UsageEvent[]
+}
+
+model Customer {
+  id                  String        @id @default(uuid())
+  name                String
+  publicKey           String        @default("")
+  privateKey          String        @default("") // empty = self-custody
+  signingMode         String        @default("tracker") // tracker | self-custody
+  contactEmail        String?
+  defaultSettlementTerms String     @default("net30")
+  status              String        @default("active")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  agentIdentities     AgentIdentity[]
+  creditLines         CreditLine[]
+  obligationStates    ObligationState[]
+  usageEvents         UsageEvent[]
+  delegations         Delegation[]
+  reserves            Reserve[]
+}
+
+model AgentIdentity {
+  id                  String        @id @default(uuid())
+  customerId          String
+  label               String
+  apiKey              String        @unique @default(uuid())
+  allowedToolIds      String        @default("*")
+  status              String        @default("active")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  customer            Customer      @relation(fields: [customerId], references: [id])
+  usageEvents         UsageEvent[]
+}
+
+model Tool {
+  id                  String        @id @default(uuid())
+  providerId          String
+  name                String
+  description         String        @default("")
+  endpoint            String
+  costPerCall         Float
+  status              String        @default("active")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  provider            Provider      @relation(fields: [providerId], references: [id])
+  usageEvents         UsageEvent[]
+}
+
+model CreditLine {
+  id                  String        @id @default(uuid())
+  providerId          String
+  customerId          String
+  limitAmount         Float
+  alertThreshold      Float         @default(0.8)
+  dueDays             Int           @default(30)
+  status              String        @default("active")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  provider            Provider      @relation(fields: [providerId], references: [id])
+  customer            Customer      @relation(fields: [customerId], references: [id])
+
+  @@unique([providerId, customerId])
+}
+
+model Delegation {
+  id                  String        @id @default(uuid())
+  customerId          String
+  sessionPubKey       String        // hex-encoded session public key
+  scopeProviderIds    String        @default("*") // comma-separated or "*"
+  scopeToolIds        String        @default("*") // comma-separated or "*"
+  spendCap            Float         // max cumulative spend under this delegation
+  spentSoFar          Float         @default(0)
+  expiresAt           DateTime
+  authMessage         String        // canonical delegation message signed by root key
+  authSignature       String        // root key's signature on authMessage
+  status              String        @default("active") // active | expired | revoked | exhausted
+  createdAt           DateTime      @default(now())
+
+  customer            Customer      @relation(fields: [customerId], references: [id])
+  obligationUpdates   ObligationUpdate[]
+}
+
+model ObligationState {
+  id                  String        @id @default(uuid())
+  providerId          String
+  customerId          String
+  currentAmount       Float         @default(0) // total committed A→B debt
+  pendingAmount       Float         @default(0) // proposed but unsigned
+  version             Int           @default(0)
+  debtorPubKey        String        @default("")
+  creditorPubKey      String        @default("")
+  latestSignedMessage String?
+  latestSignature     String?
+  settlementStatus    String        @default("current")
+  lastUpdatedAt       DateTime      @default(now())
+  createdAt           DateTime      @default(now())
+
+  provider            Provider      @relation(fields: [providerId], references: [id])
+  customer            Customer      @relation(fields: [customerId], references: [id])
+  settlementEvents    SettlementEvent[]
+  obligationUpdates   ObligationUpdate[]
+
+  @@unique([providerId, customerId])
+}
+
+model ObligationUpdate {
+  id                  String        @id @default(uuid())
+  obligationStateId   String
+  delegationId        String?       // which delegation authorized this (null = tracker-managed or manual)
+  version             Int
+  previousAmount      Float
+  newAmount           Float
+  delta               Float
+  canonicalMessage    String
+  signature           String        @default("") // session or root signature
+  signatureStatus     String        @default("signed") // signed | pending | rejected
+  type                String        // "charge" | "settlement"
+  nonce               String        @default(uuid()) // replay protection
+  timestamp           DateTime      @default(now())
+
+  obligationState     ObligationState @relation(fields: [obligationStateId], references: [id])
+  delegation          Delegation?   @relation(fields: [delegationId], references: [id])
+}
+
+model Reserve {
+  id                  String        @id @default(uuid())
+  customerId          String
+  debtorPubKey        String        // owner of the reserve
+  reserveTokenId      String        @unique // Ergo singleton token ID
+  trackerNftId        String        // which tracker NFT this reserve trusts
+  boxId               String?       // current UTXO box ID on Ergo (updated by scanning)
+  valueNanoErg        BigInt        @default(0) // current ERG collateral
+  avlTreeDigest       String?       // current redeemed amounts tree digest
+  creationHeight      Int?          // block height when reserve was created
+  reserveAddress      String?       // Ergo address of the reserve contract
+  // Reserve lifecycle: requested → submitted → active → depleted
+  lifecycle           String        @default("requested") // requested | submitted | active | depleted
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  customer            Customer      @relation(fields: [customerId], references: [id])
+}
+
+model UsageEvent {
+  id                  String        @id @default(uuid())
+  agentIdentityId     String
+  toolId              String
+  providerId          String
+  customerId          String
+  amountCharged       Float
+  timestamp           DateTime      @default(now())
+  requestRef          String?
+  outcome             String        @default("success")
+
+  agentIdentity       AgentIdentity @relation(fields: [agentIdentityId], references: [id])
+  tool                Tool          @relation(fields: [toolId], references: [id])
+  provider            Provider      @relation(fields: [providerId], references: [id])
+  customer            Customer      @relation(fields: [customerId], references: [id])
+}
+
+model SettlementEvent {
+  id                  String        @id @default(uuid())
+  obligationStateId   String
+  amount              Float
+  method              String        @default("manual")
+  status              String        @default("completed")
+  timestamp           DateTime      @default(now())
+
+  obligationState     ObligationState @relation(fields: [obligationStateId], references: [id])
+}

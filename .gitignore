@@ -1,0 +1,39 @@
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Prisma / SQLite
+*.db
+*.db-journal
+
+# Generated
+agent-tab/src/generated/
+
+# Environment (contains API keys)
+.env
+.env.local
+.env.*.local
+
+# Scala/SBT
+chaincash/target/
+chaincash/project/target/
+chaincash/project/project/
+
+# Ergo node data
+ergo-testnet/
+*.jar
+wallet/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code memory (local to each machine)
+.claude/
