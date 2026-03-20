@@ -22,6 +22,13 @@ import {
 // --- Constants ---
 const PENDING_TTL_MS = 15 * 60 * 1000; // 15 minutes — pending updates expire after this
 
+/**
+ * Denomination: 1 credit = 1 ERG = 1,000,000,000 nanoERG.
+ * Used for converting between Agent Tab credit amounts and on-chain nanoERG values.
+ * This is the defined exchange rate for the first redeemable implementation.
+ */
+export const NANOERG_PER_CREDIT = 1_000_000_000;
+
 // --- Types ---
 
 export interface ProposeInput {
@@ -31,6 +38,7 @@ export interface ProposeInput {
   expectedVersion: number; // optimistic concurrency — must match current version
   requestId: string; // idempotency key
   sessionPubKey?: string; // for delegated signing
+  customerId?: string; // FK for obligation creation
   // Pricing context (tracker records, not just blind write)
   toolId?: string;
   toolName?: string;
@@ -204,7 +212,7 @@ export class TrackerService {
         note = await prisma.obligationState.create({
           data: {
             providerId: input.providerId ?? "",
-            customerId: "", // app layer fills this
+            customerId: input.customerId ?? "",
             debtorPubKey: input.debtorPubKey,
             creditorPubKey: input.creditorPubKey,
             currentAmount: input.delta,
@@ -261,7 +269,7 @@ export class TrackerService {
       note = await prisma.obligationState.create({
         data: {
           providerId: input.providerId ?? "",
-          customerId: "",
+          customerId: input.customerId ?? "",
           debtorPubKey: input.debtorPubKey,
           creditorPubKey: input.creditorPubKey,
           currentAmount: 0,
@@ -566,9 +574,8 @@ export class TrackerService {
 
     const totalDebt = notes.reduce((s, n) => s + n.currentAmount, 0);
     const totalReserveNanoErg = reserves.reduce((s, r) => s + Number(r.valueNanoErg), 0);
-    // Convert nanoERG to credits (1 ERG = 1,000,000,000 nanoERG)
-    // For now, treat reserve value as a tracker-side estimate, not proven on-chain
-    const totalReserveCredits = totalReserveNanoErg > 0 ? totalReserveNanoErg / 1_000_000_000 : null;
+    // Convert nanoERG to credits using defined denomination (1 credit = 1 ERG)
+    const totalReserveCredits = totalReserveNanoErg > 0 ? totalReserveNanoErg / NANOERG_PER_CREDIT : null;
     const collateralizationRatio = totalDebt > 0 && totalReserveCredits !== null
       ? totalReserveCredits / totalDebt
       : null;

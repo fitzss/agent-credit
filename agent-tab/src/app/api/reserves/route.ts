@@ -10,7 +10,8 @@ export async function GET(req: NextRequest) {
   const customerId = req.nextUrl.searchParams.get("customerId");
   const where = customerId ? { customerId } : {};
   const reserves = await prisma.reserve.findMany({ where, orderBy: { createdAt: "desc" } });
-  return NextResponse.json(reserves);
+  const serializable = reserves.map(r => ({ ...r, valueNanoErg: r.valueNanoErg.toString() }));
+  return NextResponse.json(serializable);
 }
 
 /**
@@ -67,6 +68,8 @@ export async function POST(req: NextRequest) {
 
 /**
  * Refresh reserve status from Ergo testnet (via sidecar).
+ * Computes redeemability based on identity match between
+ * customer pubkey, obligation debtorPubKey, and on-chain R4 ownerPubKey.
  */
 export async function PATCH(req: NextRequest) {
   const body = await req.json();
@@ -76,7 +79,10 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Missing reserveId" }, { status: 400 });
   }
 
-  const reserve = await prisma.reserve.findUnique({ where: { id: reserveId } });
+  const reserve = await prisma.reserve.findUnique({
+    where: { id: reserveId },
+    include: { customer: true },
+  });
   if (!reserve) {
     return NextResponse.json({ error: "Reserve not found" }, { status: 404 });
   }
@@ -95,10 +101,32 @@ export async function PATCH(req: NextRequest) {
           lifecycle: "active",
         },
       });
-      return NextResponse.json({ reserve: updated, onChainStatus: status });
+
+      // Redeemability check: customer pubkey must match on-chain R4
+      const onChainOwner = status.ownerPubKey ?? "";
+      const customerKey = reserve.customer.publicKey;
+      const dbDebtorKey = reserve.debtorPubKey;
+      const identityMatch = onChainOwner === customerKey && customerKey === dbDebtorKey;
+      const onChainTrackerMatch = status.trackerNftId === reserve.trackerNftId;
+
+      const redeemability = {
+        redeemable: identityMatch && onChainTrackerMatch,
+        checks: {
+          customerKeyMatchesOnChainR4: onChainOwner === customerKey,
+          debtorPubKeyMatchesCustomer: dbDebtorKey === customerKey,
+          trackerNftIdMatchesOnChain: onChainTrackerMatch,
+          onChainOwnerPubKey: onChainOwner,
+          customerPubKey: customerKey,
+          reserveDebtorPubKey: dbDebtorKey,
+        },
+      };
+
+      const serializable = { ...updated, valueNanoErg: updated.valueNanoErg.toString() };
+      return NextResponse.json({ reserve: serializable, onChainStatus: status, redeemability });
     } else {
+      const serializable = { ...reserve, valueNanoErg: reserve.valueNanoErg.toString() };
       return NextResponse.json({
-        reserve,
+        reserve: serializable,
         onChainStatus: status,
         note: "Reserve not yet found on-chain. It may still be in the mempool.",
       });

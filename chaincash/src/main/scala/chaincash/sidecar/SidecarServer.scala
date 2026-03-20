@@ -508,17 +508,33 @@ object SidecarServer extends App {
               val boxId = box.hcursor.downField("boxId").as[String].getOrElse("")
               val value = box.hcursor.downField("value").as[Long].getOrElse(0L)
               val creationHeight = box.hcursor.downField("creationHeight").as[Int].getOrElse(0)
-              val r4 = box.hcursor.downField("additionalRegisters").downField("R4").downField("serializedValue").as[String].getOrElse("")
-              val r5 = box.hcursor.downField("additionalRegisters").downField("R5").downField("serializedValue").as[String].getOrElse("")
-              val r6 = box.hcursor.downField("additionalRegisters").downField("R6").downField("serializedValue").as[String].getOrElse("")
+              // Node API returns registers as flat hex strings or as {serializedValue: "..."} objects
+              val regs = box.hcursor.downField("additionalRegisters")
+              def readReg(name: String): String = {
+                val field = regs.downField(name)
+                field.downField("serializedValue").as[String].getOrElse(
+                  field.as[String].getOrElse("")
+                )
+              }
+              val r4raw = readReg("R4")
+              val r5raw = readReg("R5")
+              val r6raw = readReg("R6")
+
+              // Decode register type prefixes to extract semantic values:
+              // R4 (GroupElement): strip 0x07 type tag -> bare 33-byte compressed pubkey
+              val ownerPubKey = if (r4raw.startsWith("07") && r4raw.length >= 68) r4raw.drop(2) else r4raw
+              // R6 (Coll[Byte]): strip 0x0e type tag + 0x20 VLQ length -> bare 32-byte token ID
+              val trackerNftId = if (r6raw.startsWith("0e20") && r6raw.length >= 68) r6raw.drop(4) else r6raw
+              // R5 (AvlTree): strip 0x64 type tag -> AvlTreeData (digest + flags + keyLength + valueLengthOpt)
+              val avlTreeDigest = if (r5raw.startsWith("64") && r5raw.length >= 4) r5raw.drop(2) else r5raw
 
               Json.obj(
                 "found" -> true.asJson,
                 "boxId" -> boxId.asJson,
                 "valueNanoErg" -> value.asJson,
-                "ownerPubKey" -> r4.asJson,
-                "trackerNftId" -> r6.asJson,
-                "avlTreeDigest" -> r5.asJson,
+                "ownerPubKey" -> ownerPubKey.asJson,
+                "trackerNftId" -> trackerNftId.asJson,
+                "avlTreeDigest" -> avlTreeDigest.asJson,
                 "creationHeight" -> creationHeight.asJson
               )
             }

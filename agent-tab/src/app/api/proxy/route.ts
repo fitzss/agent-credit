@@ -115,6 +115,7 @@ export async function POST(req: NextRequest) {
         expectedVersion: note?.version ?? 0,
         requestId: uuid(),
         sessionPubKey: sessionPubKey || undefined,
+        customerId: agent.customerId,
         toolId,
         toolName: tool.name,
         providerId: tool.providerId,
