@@ -31,7 +31,9 @@ class BasisSpec extends PropSpec with Matchers with ScalaCheckDrivenPropertyChec
   val fakeScript = "sigmaProp(true)"
 
   val chainCashPlasmaParameters = PlasmaParameters(32, None)
-  def emptyPlasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, chainCashPlasmaParameters)
+  // Reserve trees use InsertUpdate so repeated same-pair redemption can use .update()
+  val InsertUpdateFlags = AvlTreeFlags(insertAllowed = true, updateAllowed = true, removeAllowed = false)
+  def emptyPlasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](InsertUpdateFlags, chainCashPlasmaParameters)
   val emptyTreeErgoValue: ErgoValue[AvlTree] = emptyPlasmaMap.ergoValue
   val emptyTree: AvlTree = emptyTreeErgoValue.getValue
 
@@ -250,6 +252,95 @@ class BasisSpec extends PropSpec with Matchers with ScalaCheckDrivenPropertyChec
           changeAddress,
           Array[String](receiverSecret.toString()),
           false
+        )
+      }
+    }
+  }
+
+  property("basis repeated same-pair redemption should work with update") {
+    createMockedErgoClient(MockData(Nil, Nil)).execute { implicit ctx: BlockchainContext =>
+
+      val totalDebt = 1000000000L // 1 ERG total debt
+      val firstRedeemAmount = 300000000L // 0.3 ERG first redemption
+      val secondRedeemAmount = 400000000L // 0.4 ERG second redemption
+
+      val key = mkKey(ownerPk, receiverPk)
+      val message = mkMessage(key, totalDebt)
+
+      // Same signatures for both redemptions (same totalDebt in tracker)
+      val reserveSigBytes = mkSigBytes(SigUtils.sign(message, ownerSecret))
+      val trackerSigBytes = mkSigBytes(SigUtils.sign(message, trackerSecret))
+
+      // Tracker tree with debt record
+      val TrackerTreeAndProof(trackerTree, trackerLookupProof) = mkTrackerTreeAndProof(key, totalDebt)
+
+      // === FIRST REDEMPTION: insert into empty reserve tree ===
+
+      val reserveMap = new PlasmaMap[Array[Byte], Array[Byte]](InsertUpdateFlags, chainCashPlasmaParameters)
+      val initialTree = reserveMap.ergoValue
+
+      val insertRes = reserveMap.insert((key, Longs.toByteArray(firstRedeemAmount)))
+      val insertProof = insertRes.proof.bytes
+      val afterFirstTree = reserveMap.ergoValue
+
+      val basisInput1 = mkBasisInput(
+        minValue + totalDebt + feeValue, initialTree,
+        receiverPk, reserveSigBytes, totalDebt, insertProof, trackerSigBytes,
+        lookupProofBytes = None, // first redemption: no lookup
+        trackerLookupProofBytes = Some(trackerLookupProof)
+      )
+
+      val trackerDataInput = mkTrackerDataInput(trackerTree)
+
+      val basisOutput1 = createOut(
+        Constants.basisContract,
+        minValue + totalDebt - firstRedeemAmount + feeValue,
+        Array(ErgoValue.of(ownerPk), afterFirstTree, ErgoValue.of(trackerNFTBytes)),
+        Array(new ErgoToken(basisTokenId, 1))
+      )
+
+      val redemptionOutput1 = createOut(trueScript, firstRedeemAmount, Array(), Array())
+
+      noException should be thrownBy {
+        createTx(
+          Array(basisInput1), Array(trackerDataInput), Array(basisOutput1, redemptionOutput1),
+          fee = None, changeAddress, Array(receiverSecret.toString()), false
+        )
+      }
+
+      // === SECOND REDEMPTION: update existing entry in reserve tree ===
+
+      // Lookup proof for existing entry (proves key exists with value = firstRedeemAmount)
+      val lookupProof = reserveMap.lookUp(key).proof.bytes
+
+      // Update proof: change value from firstRedeemAmount to cumulative (first + second)
+      val cumulativeRedeemed = firstRedeemAmount + secondRedeemAmount
+      val updateRes = reserveMap.update((key, Longs.toByteArray(cumulativeRedeemed)))
+      val updateProof = updateRes.proof.bytes
+      val afterSecondTree = reserveMap.ergoValue
+
+      val basisInput2 = mkBasisInput(
+        minValue + totalDebt - firstRedeemAmount + feeValue, afterFirstTree,
+        receiverPk, reserveSigBytes, totalDebt, updateProof, trackerSigBytes,
+        lookupProofBytes = Some(lookupProof), // subsequent: lookup proves existing value
+        trackerLookupProofBytes = Some(trackerLookupProof)
+      )
+
+      val trackerDataInput2 = mkTrackerDataInput(trackerTree)
+
+      val basisOutput2 = createOut(
+        Constants.basisContract,
+        minValue + totalDebt - firstRedeemAmount - secondRedeemAmount + feeValue,
+        Array(ErgoValue.of(ownerPk), afterSecondTree, ErgoValue.of(trackerNFTBytes)),
+        Array(new ErgoToken(basisTokenId, 1))
+      )
+
+      val redemptionOutput2 = createOut(trueScript, secondRedeemAmount, Array(), Array())
+
+      noException should be thrownBy {
+        createTx(
+          Array(basisInput2), Array(trackerDataInput2), Array(basisOutput2, redemptionOutput2),
+          fee = None, changeAddress, Array(receiverSecret.toString()), false
         )
       }
     }
@@ -1227,18 +1318,16 @@ class BasisSpec extends PropSpec with Matchers with ScalaCheckDrivenPropertyChec
   case class TreeAndProof(initialTree: ErgoValue[AvlTree], nextTree: ErgoValue[AvlTree], proofBytes: Array[Byte])
 
   // For first redemption: start with empty tree, prove insertion of redeemedDebt
-  // Note: The contract uses insert-only tree, so only first redemption per (owner, receiver) pair is supported
   def mkTreeAndProof(key: Array[Byte], redeemedDebt: Long): TreeAndProof = {
-    val plasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, chainCashPlasmaParameters)
+    val plasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](InsertUpdateFlags, chainCashPlasmaParameters)
     val initial = plasmaMap.ergoValue  // empty tree
-    // Prove insertion of redeemed debt value
     val insertRes = plasmaMap.insert((key, Longs.toByteArray(redeemedDebt)))
     TreeAndProof(initial, plasmaMap.ergoValue, insertRes.proof.bytes)
   }
 
-  // Lookup proof for existing redeemed debt (for subsequent redemptions if contract supported them)
+  // Lookup proof for existing redeemed debt (for subsequent redemptions)
   def mkLookupProof(key: Array[Byte], redeemedDebt: Long): Array[Byte] = {
-    val plasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, chainCashPlasmaParameters)
+    val plasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](InsertUpdateFlags, chainCashPlasmaParameters)
     val insertRes = plasmaMap.insert((key, Longs.toByteArray(redeemedDebt)))
     plasmaMap.lookUp(key).proof.bytes
   }

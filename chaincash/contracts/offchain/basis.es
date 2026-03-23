@@ -282,9 +282,15 @@
 
       val newRedeemed = redeemedDebt + redeemed
       val treeValue = longToByteArray(newRedeemed)
-      val redeemedKeyVal = (key, treeValue)  // key -> redeemed debt value
-      val insertProof = getVar[Coll[Byte]](5).get // Merkle proof for tree insertion
-      val nextTree: AvlTree = SELF.R5[AvlTree].get.insert(Coll(redeemedKeyVal), insertProof).get // todo: insertOrUpdate?
+      val redeemedKeyVal = (key, treeValue)  // key -> cumulative redeemed debt value
+      val treeProof = getVar[Coll[Byte]](5).get // Merkle proof for tree insert or update
+      val nextTree: AvlTree = if(lookupProofOpt.isDefined) {
+        // Key already exists in tree (subsequent redemption) — update cumulative value
+        SELF.R5[AvlTree].get.update(Coll(redeemedKeyVal), treeProof).get
+      } else {
+        // Key does not exist (first redemption for this pair) — insert new entry
+        SELF.R5[AvlTree].get.insert(Coll(redeemedKeyVal), treeProof).get
+      }
       // Verify tree was properly updated in output
       val properRedemptionTree = nextTree == selfOut.R5[AvlTree].get
 
