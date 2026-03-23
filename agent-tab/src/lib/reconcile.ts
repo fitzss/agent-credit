@@ -184,3 +184,67 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
     settlement: { id: settlement.id, amount: settlement.amount, method: settlement.method, redemptionTxId: settlement.redemptionTxId },
   };
 }
+
+/**
+ * Compute the cumulative tracker debt for a (debtor, creditor) pair.
+ *
+ * The tracker tree stores ever-increasing cumulative debt: hash(A||B) → totalDebt.
+ * For redemption, totalDebt = sum of all previously redeemed amounts + current obligation.
+ * This is what the Schnorr signatures are computed over and what the contract verifies
+ * against the tracker tree lookup.
+ *
+ * Invariant: totalDebtNanoErg == previouslyRedeemedNanoErg + currentObligationNanoErg
+ *
+ * This function is the single source of truth for this computation.
+ * All redemption paths must use it to avoid silent regression of cumulative semantics.
+ */
+export async function computeCumulativeTrackerDebt(
+  customerId: string,
+  debtorPubKey: string,
+  creditorPubKey: string,
+  currentObligationNanoErg: number
+): Promise<{ totalDebtNanoErg: number; previouslyRedeemedNanoErg: number }> {
+  const priorSettlements = await prisma.settlementEvent.findMany({
+    where: {
+      method: "on-chain-redemption",
+      status: "completed",
+      obligationState: { customerId },
+    },
+    include: { obligationState: true },
+  });
+
+  const previouslyRedeemedNanoErg = priorSettlements
+    .filter((s) =>
+      s.obligationState.debtorPubKey === debtorPubKey &&
+      s.obligationState.creditorPubKey === creditorPubKey
+    )
+    .reduce((sum, s) => sum + Math.round(s.amount * NANO_PER_CREDIT), 0);
+
+  return {
+    totalDebtNanoErg: previouslyRedeemedNanoErg + currentObligationNanoErg,
+    previouslyRedeemedNanoErg,
+  };
+}
+
+/**
+ * Gather existing reserve tree entries from settlement history.
+ * Used to reconstruct the PlasmaMap state for proof generation.
+ */
+export async function gatherExistingReserveEntries(customerId: string) {
+  const priorSettlements = await prisma.settlementEvent.findMany({
+    where: {
+      method: "on-chain-redemption",
+      status: "completed",
+      obligationState: { customerId },
+    },
+    include: { obligationState: true },
+  });
+
+  return priorSettlements
+    .filter((s) => s.redemptionTxId)
+    .map((s) => ({
+      ownerPubKeyHex: s.obligationState.debtorPubKey,
+      receiverPubKeyHex: s.obligationState.creditorPubKey,
+      redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
+    }));
+}

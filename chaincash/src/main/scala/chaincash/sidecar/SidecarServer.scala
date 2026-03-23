@@ -807,6 +807,17 @@ object SidecarServer extends App {
           val reconstructedDigest = Base16.encode(reserveMap.ergoValue.getValue.digest.toArray)
           val (_, reserveBoxBody) = nodeGet(s"/utxo/byId/$reserveBoxId")
           val reserveBoxJson = parse(reserveBoxBody).getOrElse(Json.Null)
+
+          // --- Step 6c: Verify reserve box is under the current contract version ---
+          val onChainErgoTree = reserveBoxJson.hcursor.downField("ergoTree").as[String].getOrElse("")
+          val expectedErgoTree = Base16.encode(basisErgoTree.bytes)
+          if (onChainErgoTree.nonEmpty && onChainErgoTree != expectedErgoTree) {
+            throw new Exception(
+              s"Reserve box contract mismatch: on-chain ErgoTree does not match sidecar's compiled contract. " +
+              s"The reserve may be deployed under an older contract version (v1 insert-only). " +
+              s"Deploy a new reserve under the current contract for repeated same-pair redemption."
+            )
+          }
           val onChainR5Hex = reserveBoxJson.hcursor
             .downField("additionalRegisters").downField("R5")
             .as[String].getOrElse("")

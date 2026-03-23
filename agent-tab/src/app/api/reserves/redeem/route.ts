@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { reconcileRedemption, ReconcileError } from "@/lib/reconcile";
+import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -82,33 +82,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Tracker discovery failed: ${e.message}` }, { status: 502 });
   }
 
-  // --- Step 3: Compute redemption parameters + gather existing tree entries ---
+  // --- Step 2b: Contract version guardrail ---
+  // v1 reserves (insert-only) only support one redemption per (owner, receiver) pair.
+  // v2 reserves (insert+update) support repeated same-pair redemption.
+  const existingReserveEntries = await gatherExistingReserveEntries(reserve.customerId);
+  const hasPriorRedemptionForThisPair = existingReserveEntries.some(
+    (e) => e.ownerPubKeyHex === obligation.debtorPubKey &&
+           e.receiverPubKeyHex === obligation.creditorPubKey
+  );
+
+  if (hasPriorRedemptionForThisPair && reserve.contractVersion === "v1") {
+    return NextResponse.json({
+      error: "Reserve is v1 (insert-only): cannot redeem again for the same (owner, receiver) pair",
+      detail: {
+        contractVersion: reserve.contractVersion,
+        hint: "Deploy a v2 reserve under the updated contract to support repeated same-pair redemption",
+      },
+    }, { status: 409 });
+  }
+
+  // --- Step 3: Compute redemption parameters ---
   const redeemAmountNanoErg = Math.round(obligation.currentAmount * NANO_PER_CREDIT);
 
-  const priorSettlements = await prisma.settlementEvent.findMany({
-    where: {
-      method: "on-chain-redemption",
-      status: "completed",
-      obligationState: { customerId: reserve.customerId },
-    },
-    include: { obligationState: true },
-  });
-
-  const existingReserveEntries = priorSettlements
-    .filter((s) => s.redemptionTxId)
-    .map((s) => ({
-      ownerPubKeyHex: s.obligationState.debtorPubKey,
-      receiverPubKeyHex: s.obligationState.creditorPubKey,
-      redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
-    }));
-
-  // totalDebtNanoErg must match what's in the tracker tree (cumulative ever-increasing debt).
-  // For repeated same-pair redemption: previously redeemed + current obligation amount.
-  const previouslyRedeemedForThisPair = priorSettlements
-    .filter((s) => s.obligationState.debtorPubKey === obligation.debtorPubKey &&
-                   s.obligationState.creditorPubKey === obligation.creditorPubKey)
-    .reduce((sum, s) => sum + Math.round(s.amount * NANO_PER_CREDIT), 0);
-  const totalDebtNanoErg = previouslyRedeemedForThisPair + redeemAmountNanoErg;
+  // Cumulative tracker debt: single source of truth via helper
+  const { totalDebtNanoErg, previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(
+    reserve.customerId,
+    obligation.debtorPubKey,
+    obligation.creditorPubKey,
+    redeemAmountNanoErg
+  );
 
   // --- Step 3b: Pre-check R5 digest ---
   const chainState = await getReserveStatus(reserve.reserveTokenId);

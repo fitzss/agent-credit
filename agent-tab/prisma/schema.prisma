@@ -162,6 +162,8 @@ model Reserve {
   avlTreeDigest       String?       // current redeemed amounts tree digest
   creationHeight      Int?          // block height when reserve was created
   reserveAddress      String?       // Ergo address of the reserve contract
+  // v1 = insert-only (one redemption per pair), v2 = insert+update (repeated same-pair)
+  contractVersion     String        @default("v1") // v1 | v2
   // Reserve lifecycle: requested → submitted → active → depleted
   lifecycle           String        @default("requested") // requested | submitted | active | depleted
   createdAt           DateTime      @default(now())
