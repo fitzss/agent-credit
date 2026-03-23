@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { deployReserve, getReserveStatus } from "@/lib/sidecar-client";
+import { deployReserve, getReserveStatus, deriveContractVersion } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
@@ -44,6 +44,9 @@ export async function POST(req: NextRequest) {
       initialCollateralNanoErg: initialCollateralNanoErg || 1000000000,
     });
 
+    // Derive contract version from the deployed address
+    const contractVersion = await deriveContractVersion(deployResult.reserveAddress);
+
     // Store reserve record
     const reserve = await prisma.reserve.create({
       data: {
@@ -52,6 +55,7 @@ export async function POST(req: NextRequest) {
         reserveTokenId,
         trackerNftId,
         reserveAddress: deployResult.reserveAddress,
+        contractVersion,
         lifecycle: "requested",
       },
     });
@@ -91,6 +95,9 @@ export async function PATCH(req: NextRequest) {
     const status = await getReserveStatus(reserve.reserveTokenId);
 
     if (status.found) {
+      // Re-derive contract version from stored reserveAddress on each refresh
+      const contractVersion = await deriveContractVersion(reserve.reserveAddress);
+
       const updated = await prisma.reserve.update({
         where: { id: reserveId },
         data: {
@@ -98,6 +105,7 @@ export async function PATCH(req: NextRequest) {
           valueNanoErg: BigInt(status.valueNanoErg ?? 0),
           avlTreeDigest: status.avlTreeDigest,
           creationHeight: status.creationHeight,
+          contractVersion,
           lifecycle: "active",
         },
       });

@@ -85,3 +85,29 @@ export async function getReserveStatus(reserveTokenId: string): Promise<ReserveS
   const res = await sidecarFetch(`/reserve/status?reserveTokenId=${reserveTokenId}`);
   return res.json();
 }
+
+/**
+ * Get the sidecar's current compiled Basis contract address.
+ * This is the v2 (insert+update) contract address.
+ * Used to derive contractVersion for reserves by comparing reserveAddress.
+ */
+export async function getCurrentBasisAddress(): Promise<string | null> {
+  try {
+    const health = await getSidecarHealth();
+    return health?.basisAddress || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Derive contract version from a reserve's address.
+ * If the reserve address matches the sidecar's current compiled contract → v2.
+ * Otherwise → v1.
+ */
+export async function deriveContractVersion(reserveAddress: string | null): Promise<"v1" | "v2"> {
+  if (!reserveAddress) return "v1";
+  const currentAddress = await getCurrentBasisAddress();
+  if (!currentAddress) return "v1"; // can't determine — default safe
+  return reserveAddress === currentAddress ? "v2" : "v1";
+}
