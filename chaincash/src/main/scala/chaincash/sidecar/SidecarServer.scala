@@ -7,13 +7,18 @@ import io.circe.syntax._
 import io.circe.Json
 import org.ergoplatform.{ErgoAddressEncoder, P2PKAddress}
 import org.ergoplatform.appkit.NetworkType
+import com.google.common.primitives.Longs
 import scorex.crypto.encode.Base16
+import scorex.crypto.hash.Blake2b256
 import sigmastate.AvlTreeFlags
 import sigmastate.Values.{AvlTreeConstant, GroupElementConstant}
+import sigmastate.basics.CryptoConstants
 import sigmastate.serialization.{GroupElementSerializer, ValueSerializer}
+import sigmastate.eval._
 import special.sigma.AvlTree
 import work.lithos.plasma.PlasmaParameters
 import work.lithos.plasma.collections.PlasmaMap
+import chaincash.offchain.SigUtils
 
 import scala.io.Source
 
@@ -550,10 +555,377 @@ object SidecarServer extends App {
     }
   })
 
+  // ===== /tracker/deploy =====
+  // Deploys a tracker box on-chain with a single debt entry in the AVL tree.
+  // Generates a Schnorr keypair for the tracker, builds the tree, and submits.
+  server.createContext("/tracker/deploy", (exchange: HttpExchange) => {
+    handlePost(exchange) { body =>
+      val cursor = body.hcursor
+      val ownerPubKeyHex = cursor.downField("ownerPubKeyHex").as[String].getOrElse("")
+      val receiverPubKeyHex = cursor.downField("receiverPubKeyHex").as[String].getOrElse("")
+      val totalDebt = cursor.downField("totalDebtNanoErg").as[Long].getOrElse(0L)
+      val trackerNftId = cursor.downField("trackerNftId").as[String].getOrElse("")
+      val trackerNftBoxId = cursor.downField("trackerNftBoxId").as[String].getOrElse("")
+      val apiKey = cursor.downField("nodeApiKey").as[String].getOrElse("")
+
+      if (ownerPubKeyHex.isEmpty || receiverPubKeyHex.isEmpty || totalDebt <= 0 || trackerNftId.isEmpty || apiKey.isEmpty) {
+        Json.obj("error" -> "Missing required fields: ownerPubKeyHex, receiverPubKeyHex, totalDebtNanoErg, trackerNftId, nodeApiKey".asJson)
+      } else {
+        try {
+          // Step 1: Generate tracker Schnorr keypair
+          val trackerSecret = SigUtils.randBigInt
+          val g = CryptoConstants.dlogGroup.generator
+          val trackerPk = g.exp(trackerSecret.bigInteger)
+          val trackerPkBytes = GroupElementSerializer.toBytes(trackerPk)
+          val trackerPkHex = Base16.encode(trackerPkBytes)
+
+          // Step 2: Build AVL tree key: blake2b256(ownerPk || receiverPk)
+          val ownerPkBytes = Base16.decode(ownerPubKeyHex).get
+          val receiverPkBytes = Base16.decode(receiverPubKeyHex).get
+          val key = Blake2b256(ownerPkBytes ++ receiverPkBytes)
+
+          // Step 3: Build tracker AVL tree with single entry
+          // Use InsertOnly + key size 32, matching BasisSpec
+          val basisPlasmaParams = PlasmaParameters(32, None)
+          val trackerPlasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](
+            AvlTreeFlags.InsertOnly, basisPlasmaParams
+          )
+          val insertRes = trackerPlasmaMap.insert((key, Longs.toByteArray(totalDebt)))
+          val trackerTreeErgoValue = trackerPlasmaMap.ergoValue
+
+          // Generate lookup proof for the entry we just inserted
+          val lookupResult = trackerPlasmaMap.lookUp(key)
+          val lookupProofBytes = lookupResult.proof.bytes
+          val lookupProofHex = Base16.encode(lookupProofBytes)
+
+          // Tree digest for verification
+          val treeDigestHex = Base16.encode(trackerTreeErgoValue.getValue.digest.toArray)
+
+          // Step 4: Encode registers for tracker box
+          // R4 = tracker public key (GroupElement)
+          val trackerPkConstant = GroupElementConstant(trackerPk)
+          val r4Encoded = Base16.encode(ValueSerializer.serialize(trackerPkConstant))
+          // R5 = AVL tree with debt entry
+          val r5Encoded = Base16.encode(ValueSerializer.serialize(AvlTreeConstant(trackerTreeErgoValue.getValue)))
+
+          // Step 5: Get wallet address for change
+          val (_, statusBody) = nodeGet("/wallet/status", apiKey)
+          val changeAddr = parse(statusBody).getOrElse(Json.Null)
+            .hcursor.downField("changeAddress").as[String].getOrElse("")
+          if (changeAddr.isEmpty) {
+            throw new Exception("Wallet not available or locked")
+          }
+
+          // Step 6: Build transaction
+          // Tracker box: holds tracker NFT, R4=trackerPk, R5=tree
+          // Contract doesn't matter — tracker box is only used as data input (never spent in redemption)
+          // Use wallet's own P2PK address so the wallet can manage it
+          val generateRequest = Json.obj(
+            "requests" -> Json.arr(Json.obj(
+              "address" -> changeAddr.asJson,
+              "value" -> 1000000L.asJson, // 0.001 ERG min value
+              "assets" -> Json.arr(Json.obj(
+                "tokenId" -> trackerNftId.asJson,
+                "amount" -> 1L.asJson
+              )),
+              "registers" -> Json.obj(
+                "R4" -> r4Encoded.asJson,
+                "R5" -> r5Encoded.asJson
+              )
+            )),
+            "fee" -> 2000000L.asJson,
+            "inputsRaw" -> Json.arr()
+          )
+
+          val (genCode, genBody) = nodePost(
+            "/wallet/transaction/generate",
+            generateRequest.noSpaces,
+            apiKey
+          )
+
+          if (genCode != 200) {
+            Json.obj(
+              "error" -> s"Transaction generation failed ($genCode)".asJson,
+              "detail" -> genBody.asJson,
+              "generateRequest" -> generateRequest
+            )
+          } else {
+            // Step 7: Submit signed transaction
+            val (submitCode, submitBody) = nodePost(
+              "/transactions",
+              genBody,
+              apiKey
+            )
+
+            if (submitCode != 200) {
+              Json.obj(
+                "error" -> s"Transaction submission failed ($submitCode)".asJson,
+                "detail" -> submitBody.asJson
+              )
+            } else {
+              val txId = parse(submitBody).getOrElse(Json.fromString(submitBody))
+                .asString.getOrElse(submitBody.replaceAll("\"", ""))
+
+              // Parse the signed tx to get the tracker box ID (first output)
+              val signedTx = parse(genBody).getOrElse(Json.Null)
+              val trackerBoxId = signedTx.hcursor
+                .downField("outputs").downArray
+                .downField("boxId").as[String].getOrElse("")
+
+              // Write tracker secret to local file outside git tree
+              // This file is needed for /reserve/redeem signing
+              val secretDir = new java.io.File(System.getProperty("user.home"), ".chaincash-secrets")
+              secretDir.mkdirs()
+              val secretFile = new java.io.File(secretDir, s"tracker-${trackerNftId.take(8)}.json")
+              val secretJson = Json.obj(
+                "trackerNftId" -> trackerNftId.asJson,
+                "trackerSecretHex" -> Base16.encode(trackerSecret.toByteArray).asJson,
+                "trackerPubKeyHex" -> trackerPkHex.asJson,
+                "trackerBoxId" -> trackerBoxId.asJson
+              )
+              val writer = new java.io.FileWriter(secretFile)
+              writer.write(secretJson.spaces2)
+              writer.close()
+
+              Json.obj(
+                "txId" -> txId.asJson,
+                "trackerBoxId" -> trackerBoxId.asJson,
+                "trackerPubKeyHex" -> trackerPkHex.asJson,
+                "treeDigestHex" -> treeDigestHex.asJson,
+                "lookupProofHex" -> lookupProofHex.asJson,
+                "debtKeyHex" -> Base16.encode(key).asJson,
+                "totalDebtNanoErg" -> totalDebt.asJson,
+                "trackerNftId" -> trackerNftId.asJson,
+                "status" -> "submitted".asJson,
+                "secretFile" -> secretFile.getAbsolutePath.asJson,
+                "note" -> "Tracker secret written to local file (outside git tree). Needed for /reserve/redeem.".asJson
+              )
+            }
+          }
+        } catch {
+          case e: Exception =>
+            Json.obj("error" -> s"Tracker deploy failed: ${e.getMessage}".asJson)
+        }
+      }
+    }
+  })
+
+  // ===== /reserve/redeem =====
+  // Builds and submits a redemption transaction against the Basis reserve contract.
+  // Loads all signing keys from ~/.chaincash-secrets/ — no secrets in the request.
+  server.createContext("/reserve/redeem", (exchange: HttpExchange) => {
+    handlePost(exchange) { body =>
+      val cursor = body.hcursor
+      val reserveBoxId = cursor.downField("reserveBoxId").as[String].getOrElse("")
+      val trackerBoxId = cursor.downField("trackerBoxId").as[String].getOrElse("")
+      val trackerNftId = cursor.downField("trackerNftId").as[String].getOrElse("")
+      val ownerPubKeyHex = cursor.downField("ownerPubKeyHex").as[String].getOrElse("")
+      val receiverPubKeyHex = cursor.downField("receiverPubKeyHex").as[String].getOrElse("")
+      val totalDebt = cursor.downField("totalDebtNanoErg").as[Long].getOrElse(0L)
+      val redeemAmount = cursor.downField("redeemAmountNanoErg").as[Long].getOrElse(0L)
+      val apiKey = cursor.downField("nodeApiKey").as[String].getOrElse("")
+      // Existing reserve tree entries from prior redemptions (needed for proof building)
+      // Each entry: { "ownerPubKeyHex": "...", "receiverPubKeyHex": "...", "redeemedNanoErg": N }
+      val existingEntries = cursor.downField("existingReserveEntries")
+        .as[Vector[Json]].getOrElse(Vector.empty)
+
+      if (reserveBoxId.isEmpty || trackerBoxId.isEmpty || ownerPubKeyHex.isEmpty ||
+          receiverPubKeyHex.isEmpty || totalDebt <= 0 || redeemAmount <= 0 || apiKey.isEmpty) {
+        Json.obj("error" -> "Missing required fields".asJson)
+      } else {
+        try {
+          // --- Step 1: Load secrets from ~/.chaincash-secrets/ ---
+          val secretDir = new java.io.File(System.getProperty("user.home"), ".chaincash-secrets")
+
+          def readSecretField(file: java.io.File, field: String): String = {
+            val content = scala.io.Source.fromFile(file).mkString
+            parse(content).getOrElse(Json.Null)
+              .hcursor.downField(field).as[String]
+              .getOrElse(throw new Exception(s"Missing '$field' in ${file.getName}"))
+          }
+
+          val ownerSecretHex = readSecretField(
+            new java.io.File(secretDir, s"owner-${ownerPubKeyHex.take(8)}.json"), "secretHex")
+          val trackerSecretHex = readSecretField(
+            new java.io.File(secretDir, s"tracker-${trackerNftId.take(8)}.json"), "trackerSecretHex")
+          val receiverSecretHex = readSecretField(
+            new java.io.File(secretDir, s"receiver-${receiverPubKeyHex.take(8)}.json"), "secretHex")
+
+          // --- Step 2: Decode pubkeys ---
+          val ownerPkBytes = Base16.decode(ownerPubKeyHex).get
+          val receiverPkBytes = Base16.decode(receiverPubKeyHex).get
+          val ownerGE = GroupElementSerializer.fromBytes(ownerPkBytes)
+          val receiverGE = GroupElementSerializer.fromBytes(receiverPkBytes)
+          val trackerNftBytes = Base16.decode(trackerNftId).get
+
+          // --- Step 3: Build Schnorr message: blake2b256(ownerPk || receiverPk) || longToByteArray(totalDebt) ---
+          val key = Blake2b256(ownerPkBytes ++ receiverPkBytes)
+          val message = key ++ Longs.toByteArray(totalDebt)
+
+          // --- Step 4: Generate Schnorr signatures ---
+          val ownerSecret = BigInt(ownerSecretHex, 16)
+          val trackerSecret = BigInt(trackerSecretHex, 16)
+          val receiverSecret = BigInt(receiverSecretHex, 16)
+
+          val reserveSig = SigUtils.sign(message, ownerSecret)
+          val trackerSig = SigUtils.sign(message, trackerSecret)
+          val reserveSigBytes = GroupElementSerializer.toBytes(reserveSig._1) ++ reserveSig._2.toByteArray
+          val trackerSigBytes = GroupElementSerializer.toBytes(trackerSig._1) ++ trackerSig._2.toByteArray
+
+          // --- Step 5: Build tracker AVL tree lookup proof ---
+          // Rebuild the same tree as /tracker/deploy to get the same proof
+          val basisPlasmaParams = PlasmaParameters(32, None)
+          val trackerMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, basisPlasmaParams)
+          trackerMap.insert((key, Longs.toByteArray(totalDebt)))
+          val trackerLookupProof = trackerMap.lookUp(key).proof.bytes
+
+          // --- Step 6: Build reserve tree insertion proof ---
+          // Must use InsertUpdate flags to match on-chain reserve R5 (flags=03)
+          // Pre-load existing entries so the tree root matches the current on-chain state
+          val reserveTreeFlags = AvlTreeFlags(insertAllowed = true, updateAllowed = true, removeAllowed = false)
+          val reserveMap = new PlasmaMap[Array[Byte], Array[Byte]](reserveTreeFlags, basisPlasmaParams)
+          for (entry <- existingEntries) {
+            val eOwner = Base16.decode(entry.hcursor.downField("ownerPubKeyHex").as[String].getOrElse("")).get
+            val eReceiver = Base16.decode(entry.hcursor.downField("receiverPubKeyHex").as[String].getOrElse("")).get
+            val eAmount = entry.hcursor.downField("redeemedNanoErg").as[Long].getOrElse(0L)
+            val eKey = Blake2b256(eOwner ++ eReceiver)
+            reserveMap.insert((eKey, Longs.toByteArray(eAmount)))
+          }
+          // --- Step 6b: Validate reconstructed tree matches on-chain R5 ---
+          // Fetch the current reserve box R5 digest from the chain and compare
+          val reconstructedDigest = Base16.encode(reserveMap.ergoValue.getValue.digest.toArray)
+          val (_, reserveBoxBody) = nodeGet(s"/utxo/byId/$reserveBoxId")
+          val reserveBoxJson = parse(reserveBoxBody).getOrElse(Json.Null)
+          val onChainR5Hex = reserveBoxJson.hcursor
+            .downField("additionalRegisters").downField("R5")
+            .as[String].getOrElse("")
+          // R5 encoding: type tag (2 hex) + digest (variable) + flags (2 hex) + keyLength (4 hex)
+          // Extract digest: skip type tag "64", take until flags+keyLength at end (6 hex chars)
+          val onChainDigest = if (onChainR5Hex.length > 8) onChainR5Hex.drop(2).dropRight(6) else ""
+
+          if (reconstructedDigest != onChainDigest) {
+            throw new Exception(
+              s"Reserve tree drift detected! Reconstructed digest does not match on-chain R5. " +
+              s"reconstructed=$reconstructedDigest onChain=$onChainDigest " +
+              s"This means settlement history is inconsistent with on-chain state. " +
+              s"Cannot safely build insertion proof."
+            )
+          }
+
+          // Now insert the new redemption entry
+          val insertRes = reserveMap.insert((key, Longs.toByteArray(redeemAmount)))
+          val insertProof = insertRes.proof.bytes
+          val updatedReserveTree = reserveMap.ergoValue
+
+          // --- Step 7: Derive receiver P2PK address ---
+          val receiverProveDlog = sigmastate.basics.DLogProtocol.ProveDlog(receiverGE)
+          val receiverAddr = org.ergoplatform.P2PKAddress(receiverProveDlog)(ergoAddressEncoder)
+
+          // --- Step 8: Build and sign transaction via AppKit ---
+          val feeAmount = 1100000L
+
+          // Create node-only data source (no explorer needed for private testnet)
+          val nodeApiClient = new org.ergoplatform.restapi.client.ApiClient(nodeUrl, "ApiKeyAuth", apiKey)
+          val dataSource = new org.ergoplatform.appkit.impl.NodeDataSourceImpl(nodeApiClient)
+          val ctx = new org.ergoplatform.appkit.impl.BlockchainContextBuilderImpl(dataSource, networkType).build()
+
+          val result: (String, Long, Long) = {
+                // Fetch boxes from blockchain
+                val reserveBox = ctx.getBoxesById(reserveBoxId)(0)
+                val trackerBox = ctx.getBoxesById(trackerBoxId)(0)
+
+                val reserveValueBefore = reserveBox.getValue
+
+                // Attach context extension to reserve input
+                val reserveInput = reserveBox.withContextVars(
+                  new org.ergoplatform.appkit.ContextVar(0.toByte, org.ergoplatform.appkit.ErgoValue.of(0: Byte)),
+                  new org.ergoplatform.appkit.ContextVar(1.toByte, org.ergoplatform.appkit.ErgoValue.of(receiverGE)),
+                  new org.ergoplatform.appkit.ContextVar(2.toByte, org.ergoplatform.appkit.ErgoValue.of(reserveSigBytes)),
+                  new org.ergoplatform.appkit.ContextVar(3.toByte, org.ergoplatform.appkit.ErgoValue.of(totalDebt)),
+                  new org.ergoplatform.appkit.ContextVar(5.toByte, org.ergoplatform.appkit.ErgoValue.of(insertProof)),
+                  new org.ergoplatform.appkit.ContextVar(6.toByte, org.ergoplatform.appkit.ErgoValue.of(trackerSigBytes)),
+                  new org.ergoplatform.appkit.ContextVar(8.toByte, org.ergoplatform.appkit.ErgoValue.of(trackerLookupProof))
+                )
+
+                val txBuilder = ctx.newTxBuilder()
+
+                // Build reserve output (value reduced by redeemAmount)
+                val reserveContract = ctx.compileContract(
+                  org.ergoplatform.appkit.ConstantsBuilder.empty(), basisContractScript
+                )
+                val reserveValueAfter = reserveValueBefore - redeemAmount
+                val reserveOutput = txBuilder.outBoxBuilder()
+                  .value(reserveValueAfter)
+                  .contract(reserveContract)
+                  .tokens(reserveBox.getTokens.get(0))
+                  .registers(
+                    org.ergoplatform.appkit.ErgoValue.of(ownerGE),
+                    updatedReserveTree,
+                    org.ergoplatform.appkit.ErgoValue.of(trackerNftBytes)
+                  )
+                  .build()
+
+                // Build payout output (redeemAmount minus fee)
+                val payoutValue = redeemAmount - feeAmount
+                val receiverAppkitAddr = org.ergoplatform.appkit.Address.create(receiverAddr.toString)
+                val payoutOutput = txBuilder.outBoxBuilder()
+                  .value(payoutValue)
+                  .contract(receiverAppkitAddr.toErgoContract())
+                  .build()
+
+                // Build unsigned transaction
+                val unsignedTx = txBuilder
+                  .boxesToSpend(java.util.Arrays.asList(reserveInput))
+                  .withDataInputs(java.util.Arrays.asList(trackerBox))
+                  .outputs(reserveOutput, payoutOutput)
+                  .fee(feeAmount)
+                  .sendChangeTo(receiverAppkitAddr.getErgoAddress)
+                  .build()
+
+                // Sign with receiver's dlog secret (satisfies proveDlog(receiver) in contract)
+                val prover = ctx.newProverBuilder()
+                  .withDLogSecret(receiverSecret.bigInteger)
+                  .build()
+                val signedTx = prover.sign(unsignedTx)
+
+                // Submit
+                val txId = ctx.sendTransaction(signedTx)
+
+                (txId, reserveValueBefore, reserveValueAfter)
+          }
+
+          val (txId, reserveValueBefore, reserveValueAfter) = result
+
+          Json.obj(
+            "txId" -> txId.asJson,
+            "status" -> "submitted".asJson,
+            "redeemAmountNanoErg" -> redeemAmount.asJson,
+            "payoutNanoErg" -> (redeemAmount - feeAmount).asJson,
+            "feeNanoErg" -> feeAmount.asJson,
+            "reserveValueBefore" -> reserveValueBefore.asJson,
+            "reserveValueAfter" -> reserveValueAfter.asJson,
+            "receiverAddress" -> receiverAddr.toString.asJson,
+            "debtKeyHex" -> Base16.encode(key).asJson,
+            "r5DigestAfter" -> Base16.encode(updatedReserveTree.getValue.digest.toArray).asJson,
+            "note" -> "Redemption transaction submitted. Full 0.1 ERG debt redeemed.".asJson
+          )
+        } catch {
+          case e: Exception =>
+            val sw = new java.io.StringWriter()
+            e.printStackTrace(new java.io.PrintWriter(sw))
+            Json.obj(
+              "error" -> s"Redemption failed: ${e.getMessage}".asJson,
+              "stackTrace" -> sw.toString.take(2000).asJson
+            )
+        }
+      }
+    }
+  })
+
   server.setExecutor(null)
   server.start()
   println(s"Sidecar running on http://localhost:$port")
-  println("Endpoints: /health, /network/height, /wallet/pubkey, /nft/mint, /reserve/deploy, /reserve/build-and-submit, /reserve/scan, /reserve/status")
+  println("Endpoints: /health, /network/height, /wallet/pubkey, /nft/mint, /reserve/deploy, /reserve/build-and-submit, /reserve/scan, /reserve/status, /tracker/deploy, /reserve/redeem")
 
   // --- Helper methods ---
 

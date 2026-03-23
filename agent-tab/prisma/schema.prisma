@@ -127,6 +127,7 @@ model ObligationState {
   customer            Customer      @relation(fields: [customerId], references: [id])
   settlementEvents    SettlementEvent[]
   obligationUpdates   ObligationUpdate[]
+  pendingRedemptions  PendingRedemption[]
 
   @@unique([providerId, customerId])
 }
@@ -167,6 +168,7 @@ model Reserve {
   updatedAt           DateTime      @updatedAt
 
   customer            Customer      @relation(fields: [customerId], references: [id])
+  pendingRedemptions  PendingRedemption[]
 }
 
 model UsageEvent {
@@ -192,7 +194,26 @@ model SettlementEvent {
   amount              Float
   method              String        @default("manual")
   status              String        @default("completed")
+  redemptionTxId      String?       @unique // on-chain tx ID for dedup (null for manual settlements)
   timestamp           DateTime      @default(now())
 
   obligationState     ObligationState @relation(fields: [obligationStateId], references: [id])
+}
+
+// Tracks on-chain redemption txs that were submitted but not yet confirmed/reconciled.
+// Lifecycle: pending → reconciled | failed
+model PendingRedemption {
+  id                  String        @id @default(uuid())
+  txId                String        @unique
+  reserveId           String
+  obligationId        String
+  grossRedeemNanoErg  BigInt
+  feeNanoErg          BigInt        @default(0)
+  netPayoutNanoErg    BigInt        @default(0)
+  status              String        @default("pending") // pending | reconciled | failed
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  reserve             Reserve       @relation(fields: [reserveId], references: [id])
+  obligation          ObligationState @relation(fields: [obligationId], references: [id])
 }
