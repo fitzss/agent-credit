@@ -102,6 +102,14 @@ export async function POST(req: NextRequest) {
       redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
     }));
 
+  // totalDebtNanoErg must match what's in the tracker tree (cumulative ever-increasing debt).
+  // For repeated same-pair redemption: previously redeemed + current obligation amount.
+  const previouslyRedeemedForThisPair = priorSettlements
+    .filter((s) => s.obligationState.debtorPubKey === obligation.debtorPubKey &&
+                   s.obligationState.creditorPubKey === obligation.creditorPubKey)
+    .reduce((sum, s) => sum + Math.round(s.amount * NANO_PER_CREDIT), 0);
+  const totalDebtNanoErg = previouslyRedeemedForThisPair + redeemAmountNanoErg;
+
   // --- Step 3b: Pre-check R5 digest ---
   const chainState = await getReserveStatus(reserve.reserveTokenId);
   if (!chainState.found) {
@@ -127,7 +135,7 @@ export async function POST(req: NextRequest) {
         trackerNftId: reserve.trackerNftId,
         ownerPubKeyHex: reserve.debtorPubKey,
         receiverPubKeyHex: obligation.creditorPubKey,
-        totalDebtNanoErg: redeemAmountNanoErg,
+        totalDebtNanoErg,
         redeemAmountNanoErg,
         nodeApiKey: ERGO_NODE_API_KEY,
         existingReserveEntries,

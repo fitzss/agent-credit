@@ -73,15 +73,18 @@ object SidecarServer extends App {
   println(s"Starting on port $port...")
 
   // --- Helper: call Ergo node API ---
+  // Increased timeouts to handle large wallet (500+ mining reward boxes)
+  val nodeTimeout = 60000 // 60 seconds
+
   def nodeGet(path: String, apiKey: String = ""): (Int, String) = {
-    val req = scalaj.http.Http(s"$nodeUrl$path")
+    val req = scalaj.http.Http(s"$nodeUrl$path").timeout(nodeTimeout, nodeTimeout)
     val reqWithKey = if (apiKey.nonEmpty) req.header("api_key", apiKey) else req
     val resp = reqWithKey.asString
     (resp.code, resp.body)
   }
 
   def nodePost(path: String, body: String, apiKey: String = ""): (Int, String) = {
-    val req = scalaj.http.Http(s"$nodeUrl$path")
+    val req = scalaj.http.Http(s"$nodeUrl$path").timeout(nodeTimeout, nodeTimeout)
       .postData(body)
       .header("Content-Type", "application/json")
     val reqWithKey = if (apiKey.nonEmpty) req.header("api_key", apiKey) else req
@@ -216,6 +219,14 @@ object SidecarServer extends App {
                 if (firstBoxId.isEmpty) {
                   Json.obj("error" -> "Could not read box ID from unspent boxes".asJson)
                 } else {
+                  // Fetch raw bytes of the first box so we can force it as first input
+                  val (rawCode, rawBody) = nodeGet(s"/utxo/byIdBinary/$firstBoxId")
+                  val rawBytes = if (rawCode == 200) {
+                    parse(rawBody).getOrElse(Json.Null)
+                      .hcursor.downField("bytes").as[String].getOrElse("")
+                  } else ""
+                  val inputsRaw = if (rawBytes.nonEmpty) Json.arr(Json.fromString(rawBytes)) else Json.arr()
+
                   // Build mint transaction
                   // Force this box as input so tokenId == first input box ID
                   val mintRequest = Json.obj(
@@ -228,7 +239,7 @@ object SidecarServer extends App {
                       ))
                     )),
                     "fee" -> 2000000L.asJson,
-                    "inputsRaw" -> Json.arr()
+                    "inputsRaw" -> inputsRaw
                   )
 
                   // Send transaction via wallet
@@ -812,10 +823,22 @@ object SidecarServer extends App {
             )
           }
 
-          // Now insert the new redemption entry
-          val insertRes = reserveMap.insert((key, Longs.toByteArray(redeemAmount)))
-          val insertProof = insertRes.proof.bytes
-          val updatedReserveTree = reserveMap.ergoValue
+          // Check if this key already exists in the reserve tree (prior redemption for same pair)
+          val keyExists = reserveMap.lookUp(key).response.head.tryOp.get.isDefined
+
+          // Branch: insert (first redemption) or update (subsequent)
+          val (treeProof, lookupProofOpt, updatedReserveTree) = if (keyExists) {
+            // Key exists: generate lookup proof (for var #7) and update proof (for var #5)
+            val lookupProof = reserveMap.lookUp(key).proof.bytes
+            val existingRedeemed = Longs.fromByteArray(reserveMap.lookUp(key).response.head.tryOp.get.get)
+            val newCumulative = existingRedeemed + redeemAmount
+            val updateRes = reserveMap.update((key, Longs.toByteArray(newCumulative)))
+            (updateRes.proof.bytes, Some(lookupProof), reserveMap.ergoValue)
+          } else {
+            // Key does not exist: generate insert proof only (no var #7)
+            val insertRes = reserveMap.insert((key, Longs.toByteArray(redeemAmount)))
+            (insertRes.proof.bytes, None, reserveMap.ergoValue)
+          }
 
           // --- Step 7: Derive receiver P2PK address ---
           val receiverProveDlog = sigmastate.basics.DLogProtocol.ProveDlog(receiverGE)
@@ -837,15 +860,21 @@ object SidecarServer extends App {
                 val reserveValueBefore = reserveBox.getValue
 
                 // Attach context extension to reserve input
-                val reserveInput = reserveBox.withContextVars(
+                val baseVars = Array(
                   new org.ergoplatform.appkit.ContextVar(0.toByte, org.ergoplatform.appkit.ErgoValue.of(0: Byte)),
                   new org.ergoplatform.appkit.ContextVar(1.toByte, org.ergoplatform.appkit.ErgoValue.of(receiverGE)),
                   new org.ergoplatform.appkit.ContextVar(2.toByte, org.ergoplatform.appkit.ErgoValue.of(reserveSigBytes)),
                   new org.ergoplatform.appkit.ContextVar(3.toByte, org.ergoplatform.appkit.ErgoValue.of(totalDebt)),
-                  new org.ergoplatform.appkit.ContextVar(5.toByte, org.ergoplatform.appkit.ErgoValue.of(insertProof)),
+                  new org.ergoplatform.appkit.ContextVar(5.toByte, org.ergoplatform.appkit.ErgoValue.of(treeProof)),
                   new org.ergoplatform.appkit.ContextVar(6.toByte, org.ergoplatform.appkit.ErgoValue.of(trackerSigBytes)),
                   new org.ergoplatform.appkit.ContextVar(8.toByte, org.ergoplatform.appkit.ErgoValue.of(trackerLookupProof))
                 )
+                // Include var #7 (reserve tree lookup proof) only for update path
+                val allVars = lookupProofOpt match {
+                  case Some(lp) => baseVars :+ new org.ergoplatform.appkit.ContextVar(7.toByte, org.ergoplatform.appkit.ErgoValue.of(lp))
+                  case None => baseVars
+                }
+                val reserveInput = reserveBox.withContextVars(allVars: _*)
 
                 val txBuilder = ctx.newTxBuilder()
 
