@@ -220,22 +220,48 @@ model PendingRedemption {
   obligation          ObligationState @relation(fields: [obligationId], references: [id])
 }
 
-// Tracks on-chain tracker box deployments for (debtor, creditor) pairs.
-// Each /tracker/deploy creates a new record and supersedes the previous one.
+// Legacy model — kept for migration reference. Replaced by TrackerBox + TrackerEntry.
 model TrackerDeployment {
   id                  String        @id @default(uuid())
-  trackerNftId        String        // the tracker NFT token ID (shared across deploys)
-  debtorPubKey        String        // owner of the reserve / debtor
-  creditorPubKey      String        // receiver / creditor
-  totalDebtNanoErg    BigInt        // cumulative debt committed in tracker tree
-  boxId               String        // on-chain tracker box ID
-  trackerPubKeyHex    String        // tracker's Schnorr public key (R4)
-  treeDigestHex       String        // tracker tree R5 digest
-  txId                String?       // deployment transaction ID
-  isCurrent           Boolean       @default(true) // false for superseded deployments
+  trackerNftId        String
+  debtorPubKey        String
+  creditorPubKey      String
+  totalDebtNanoErg    BigInt
+  boxId               String
+  trackerPubKeyHex    String
+  treeDigestHex       String
+  txId                String?
+  isCurrent           Boolean       @default(true)
   createdAt           DateTime      @default(now())
 
-  // Application-level enforcement: only one isCurrent=true per (nft, debtor, creditor) triple.
-  // No DB unique constraint because multiple isCurrent=false records are valid (deployment history).
   @@index([trackerNftId, debtorPubKey, creditorPubKey, isCurrent])
+}
+
+// Represents an on-chain tracker box UTXO. The NFT ID is stable; the box rotates on each update.
+model TrackerBox {
+  id                  String         @id @default(uuid())
+  trackerNftId        String         // stable across box rotations
+  boxId               String         // current on-chain UTXO ID
+  trackerPubKeyHex    String         // Schnorr pubkey in R4
+  treeDigestHex       String         // R5 AVL tree digest
+  txId                String?        // deployment/update tx ID
+  isCurrent           Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+
+  entries             TrackerEntry[]
+
+  @@index([trackerNftId, isCurrent])
+}
+
+// One entry per (debtor, creditor) pair in a tracker box's AVL tree.
+model TrackerEntry {
+  id                  String         @id @default(uuid())
+  trackerBoxId        String
+  debtorPubKey        String
+  creditorPubKey      String
+  totalDebtNanoErg    BigInt         // cumulative debt committed for this pair
+
+  trackerBox          TrackerBox     @relation(fields: [trackerBoxId], references: [id])
+
+  @@unique([trackerBoxId, debtorPubKey, creditorPubKey])
 }

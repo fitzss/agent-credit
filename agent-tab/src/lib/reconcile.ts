@@ -322,7 +322,7 @@ export async function gatherExistingReserveEntries(customerId: string) {
   return Array.from(pairMap.values());
 }
 
-// --- Tracker lifecycle ---
+// --- Tracker lifecycle (TrackerBox + TrackerEntry models) ---
 
 export interface TrackerDeploymentRecord {
   trackerNftId: string;
@@ -336,57 +336,80 @@ export interface TrackerDeploymentRecord {
 }
 
 /**
- * Record a tracker deployment. Supersedes any prior current deployment
- * for the same (nft, debtor, creditor) triple.
+ * Record a tracker deployment. Creates a TrackerBox with one TrackerEntry.
+ * Supersedes any prior current box for the same NFT.
+ *
+ * Currently single-pair: each deploy creates a new box with one entry.
+ * Phase B (multi-pair) will create boxes with multiple entries.
  */
 export async function recordTrackerDeployment(record: TrackerDeploymentRecord) {
-  // Mark any existing current deployment as superseded
-  await prisma.trackerDeployment.updateMany({
-    where: {
-      trackerNftId: record.trackerNftId,
-      debtorPubKey: record.debtorPubKey,
-      creditorPubKey: record.creditorPubKey,
-      isCurrent: true,
-    },
+  // Mark any existing current box for this NFT as superseded
+  await prisma.trackerBox.updateMany({
+    where: { trackerNftId: record.trackerNftId, isCurrent: true },
     data: { isCurrent: false },
   });
 
-  return prisma.trackerDeployment.create({
+  // Also update legacy TrackerDeployment if it exists
+  await prisma.trackerDeployment.updateMany({
+    where: { trackerNftId: record.trackerNftId, isCurrent: true },
+    data: { isCurrent: false },
+  });
+
+  // Create new TrackerBox with entry
+  const box = await prisma.trackerBox.create({
     data: {
       trackerNftId: record.trackerNftId,
-      debtorPubKey: record.debtorPubKey,
-      creditorPubKey: record.creditorPubKey,
-      totalDebtNanoErg: BigInt(record.totalDebtNanoErg),
       boxId: record.boxId,
       trackerPubKeyHex: record.trackerPubKeyHex,
       treeDigestHex: record.treeDigestHex,
       txId: record.txId,
       isCurrent: true,
+      entries: {
+        create: {
+          debtorPubKey: record.debtorPubKey,
+          creditorPubKey: record.creditorPubKey,
+          totalDebtNanoErg: BigInt(record.totalDebtNanoErg),
+        },
+      },
     },
+    include: { entries: true },
+  });
+
+  return box;
+}
+
+/**
+ * Get the current tracker box for a given NFT ID.
+ * Returns the box with all its entries.
+ */
+export async function getCurrentTrackerBox(trackerNftId: string) {
+  return prisma.trackerBox.findFirst({
+    where: { trackerNftId, isCurrent: true },
+    include: { entries: true },
   });
 }
 
 /**
- * Find the current tracker deployment for a (nft, debtor, creditor) triple.
- * Returns null if no tracker has been deployed for this pair.
+ * Find a specific pair's entry in the current tracker box.
+ * Returns null if the box doesn't exist or the pair has no entry.
  */
-export async function getCurrentTrackerDeployment(
+export async function getTrackerEntryForPair(
   trackerNftId: string,
   debtorPubKey: string,
   creditorPubKey: string,
 ) {
-  return prisma.trackerDeployment.findFirst({
-    where: { trackerNftId, debtorPubKey, creditorPubKey, isCurrent: true },
-  });
+  const box = await getCurrentTrackerBox(trackerNftId);
+  if (!box) return null;
+  const entry = box.entries.find(
+    (e) => e.debtorPubKey === debtorPubKey && e.creditorPubKey === creditorPubKey
+  );
+  return entry ? { ...entry, trackerBoxId: box.boxId, trackerBox: box } : null;
 }
 
 /**
- * Validate that the current tracker deployment's committed debt matches
- * the required cumulative totalDebt for an upcoming redemption.
- *
- * Throws ReconcileError if:
- * - No tracker deployment exists for this pair
- * - The tracker's committed debt doesn't match the required totalDebt
+ * Validate that the current tracker box has an aligned entry for the given pair.
+ * Returns { trackerBoxId } if aligned.
+ * Throws ReconcileError if missing or stale.
  */
 export async function validateTrackerAlignment(
   trackerNftId: string,
@@ -394,31 +417,31 @@ export async function validateTrackerAlignment(
   creditorPubKey: string,
   requiredTotalDebtNanoErg: number,
 ): Promise<{ trackerBoxId: string }> {
-  const tracker = await getCurrentTrackerDeployment(trackerNftId, debtorPubKey, creditorPubKey);
+  const entry = await getTrackerEntryForPair(trackerNftId, debtorPubKey, creditorPubKey);
 
-  if (!tracker) {
+  if (!entry) {
     throw new ReconcileError(
-      "No tracker deployment found for this (debtor, creditor) pair. Run /tracker/deploy first.",
+      "No tracker entry found for this (debtor, creditor) pair. Deploy tracker first.",
       404,
       { trackerNftId, debtorPubKey: debtorPubKey.substring(0, 16) + "...", creditorPubKey: creditorPubKey.substring(0, 16) + "..." }
     );
   }
 
-  const committedDebt = Number(tracker.totalDebtNanoErg);
+  const committedDebt = Number(entry.totalDebtNanoErg);
   if (committedDebt !== requiredTotalDebtNanoErg) {
     throw new ReconcileError(
-      "Tracker cumulative debt is stale: committed debt does not match required totalDebt. Redeploy tracker with updated cumulative debt.",
+      "Tracker cumulative debt is stale: committed debt does not match required totalDebt.",
       409,
       {
         committedDebtNanoErg: committedDebt,
         requiredTotalDebtNanoErg,
-        trackerBoxId: tracker.boxId,
-        hint: "Call /tracker/deploy with totalDebtNanoErg=" + requiredTotalDebtNanoErg,
+        trackerBoxId: entry.trackerBoxId,
+        hint: "Redeploy tracker with totalDebtNanoErg=" + requiredTotalDebtNanoErg,
       }
     );
   }
 
-  return { trackerBoxId: tracker.boxId };
+  return { trackerBoxId: entry.trackerBoxId };
 }
 
 const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
@@ -501,17 +524,14 @@ export async function ensureTrackerAligned(params: {
 }): Promise<{ trackerBoxId: string; autoDeployed: boolean }> {
   const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
 
-  const tracker = await getCurrentTrackerDeployment(trackerNftId, debtorPubKey, creditorPubKey);
+  const entry = await getTrackerEntryForPair(trackerNftId, debtorPubKey, creditorPubKey);
 
-  if (tracker && Number(tracker.totalDebtNanoErg) === totalDebtNanoErg) {
+  if (entry && Number(entry.totalDebtNanoErg) === totalDebtNanoErg) {
     // Aligned — use existing
-    return { trackerBoxId: tracker.boxId, autoDeployed: false };
+    return { trackerBoxId: entry.trackerBoxId, autoDeployed: false };
   }
 
   // Stale or missing — auto-deploy
-  const reason = tracker
-    ? `stale (committed=${tracker.totalDebtNanoErg}, needed=${totalDebtNanoErg})`
-    : "missing";
 
   const { trackerBoxId } = await deployAndRecordTracker({
     trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg,
