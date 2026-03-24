@@ -265,3 +265,18 @@ model TrackerEntry {
 
   @@unique([trackerBoxId, debtorPubKey, creditorPubKey])
 }
+
+// Records a debt transfer (novation): move X from debt(A→B) to debt(A→C).
+// Debtor A must be the same for both obligations.
+model DebtTransfer {
+  id                  String          @id @default(uuid())
+  fromObligationId    String
+  toObligationId      String
+  amountCredits       Float           // transfer amount in credits (matches obligation units)
+  amountNanoErg       BigInt          // same amount in chain-native units for audit
+  debtorPubKey        String          // A's key (same for both obligations)
+  fromCreditorPubKey  String          // B's key
+  toCreditorPubKey    String          // C's key
+  status              String          @default("completed")
+  createdAt           DateTime        @default(now())
+}
