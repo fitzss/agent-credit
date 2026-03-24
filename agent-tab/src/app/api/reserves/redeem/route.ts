@@ -157,6 +157,16 @@ export async function POST(req: NextRequest) {
         redeemAmountNanoErg,
         nodeApiKey: ERGO_NODE_API_KEY,
         existingReserveEntries,
+        // Pass all tracker tree entries for multi-entry proof generation
+        trackerEntries: await (async () => {
+          const { getCurrentTrackerBox } = await import("@/lib/reconcile");
+          const box = await getCurrentTrackerBox(reserve.trackerNftId);
+          return box?.entries.map((e) => ({
+            ownerPubKeyHex: e.debtorPubKey,
+            receiverPubKeyHex: e.creditorPubKey,
+            totalDebtNanoErg: Number(e.totalDebtNanoErg),
+          })) || [];
+        })(),
       }),
     });
     redeemResult = await sidecarRes.json();

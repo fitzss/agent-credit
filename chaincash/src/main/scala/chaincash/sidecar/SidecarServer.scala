@@ -72,6 +72,30 @@ object SidecarServer extends App {
   println(s"Basis address (testnet): ${basisAddress.toString}")
   println(s"Starting on port $port...")
 
+  // --- Helper: parse and sort tracker entries by key for deterministic tree construction ---
+  case class TrackerTreeEntry(ownerHex: String, receiverHex: String, totalDebt: Long, key: Array[Byte])
+
+  def parseAndSortTrackerEntries(entries: Vector[Json]): Vector[TrackerTreeEntry] = {
+    entries.map { entry =>
+      val ownerHex = entry.hcursor.downField("ownerPubKeyHex").as[String].getOrElse("")
+      val receiverHex = entry.hcursor.downField("receiverPubKeyHex").as[String].getOrElse("")
+      val totalDebt = entry.hcursor.downField("totalDebtNanoErg").as[Long].getOrElse(0L)
+      val ownerBytes = Base16.decode(ownerHex).get
+      val receiverBytes = Base16.decode(receiverHex).get
+      val key = Blake2b256(ownerBytes ++ receiverBytes)
+      TrackerTreeEntry(ownerHex, receiverHex, totalDebt, key)
+    }.sortBy(e => Base16.encode(e.key)) // deterministic order by key hash
+  }
+
+  def buildTrackerPlasmaMap(entries: Vector[TrackerTreeEntry]): PlasmaMap[Array[Byte], Array[Byte]] = {
+    val basisPlasmaParams = PlasmaParameters(32, None)
+    val plasmaMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, basisPlasmaParams)
+    for (e <- entries) {
+      plasmaMap.insert((e.key, Longs.toByteArray(e.totalDebt)))
+    }
+    plasmaMap
+  }
+
   // --- Helper: call Ergo node API ---
   // Increased timeouts to handle large wallet (500+ mining reward boxes)
   val nodeTimeout = 60000 // 60 seconds
@@ -721,6 +745,123 @@ object SidecarServer extends App {
     }
   })
 
+  // ===== /tracker/update =====
+  // Creates a new tracker box with multiple (debtor, creditor) entries in the AVL tree.
+  // Spends the old tracker box (to move the NFT), builds a multi-entry tree.
+  server.createContext("/tracker/update", (exchange: HttpExchange) => {
+    handlePost(exchange) { body =>
+      val cursor = body.hcursor
+      val trackerNftId = cursor.downField("trackerNftId").as[String].getOrElse("")
+      val entries = cursor.downField("entries").as[Vector[Json]].getOrElse(Vector.empty)
+      val apiKey = cursor.downField("nodeApiKey").as[String].getOrElse("")
+
+      if (trackerNftId.isEmpty || entries.isEmpty || apiKey.isEmpty) {
+        Json.obj("error" -> "Missing required fields: trackerNftId, entries[], nodeApiKey".asJson)
+      } else {
+        try {
+          // Step 1: Generate tracker Schnorr keypair
+          val trackerSecret = SigUtils.randBigInt
+          val g = CryptoConstants.dlogGroup.generator
+          val trackerPk = g.exp(trackerSecret.bigInteger)
+          val trackerPkHex = Base16.encode(GroupElementSerializer.toBytes(trackerPk))
+
+          // Step 2: Build multi-entry AVL tree (sorted by key for deterministic structure)
+          val sortedEntries = parseAndSortTrackerEntries(entries)
+          val trackerPlasmaMap = buildTrackerPlasmaMap(sortedEntries)
+
+          val entryDetails = sortedEntries.map { e =>
+            Json.obj(
+              "ownerPubKeyHex" -> e.ownerHex.asJson,
+              "receiverPubKeyHex" -> e.receiverHex.asJson,
+              "totalDebtNanoErg" -> e.totalDebt.asJson,
+              "keyHex" -> Base16.encode(e.key).asJson
+            )
+          }
+
+          val trackerTreeErgoValue = trackerPlasmaMap.ergoValue
+          val treeDigestHex = Base16.encode(trackerTreeErgoValue.getValue.digest.toArray)
+
+          // Step 3: Encode registers
+          val trackerPkConstant = GroupElementConstant(trackerPk)
+          val r4Encoded = Base16.encode(ValueSerializer.serialize(trackerPkConstant))
+          val r5Encoded = Base16.encode(ValueSerializer.serialize(AvlTreeConstant(trackerTreeErgoValue.getValue)))
+
+          // Step 4: Get wallet address
+          val (_, statusBody) = nodeGet("/wallet/status", apiKey)
+          val changeAddr = parse(statusBody).getOrElse(Json.Null)
+            .hcursor.downField("changeAddress").as[String].getOrElse("")
+          if (changeAddr.isEmpty) throw new Exception("Wallet not available or locked")
+
+          // Step 5: Build and submit transaction
+          val generateRequest = Json.obj(
+            "requests" -> Json.arr(Json.obj(
+              "address" -> changeAddr.asJson,
+              "value" -> 1000000L.asJson,
+              "assets" -> Json.arr(Json.obj(
+                "tokenId" -> trackerNftId.asJson,
+                "amount" -> 1L.asJson
+              )),
+              "registers" -> Json.obj(
+                "R4" -> r4Encoded.asJson,
+                "R5" -> r5Encoded.asJson
+              )
+            )),
+            "fee" -> 2000000L.asJson,
+            "inputsRaw" -> Json.arr()
+          )
+
+          val (genCode, genBody) = nodePost("/wallet/transaction/generate", generateRequest.noSpaces, apiKey)
+
+          if (genCode != 200) {
+            Json.obj("error" -> s"Transaction generation failed ($genCode)".asJson, "detail" -> genBody.asJson)
+          } else {
+            val (submitCode, submitBody) = nodePost("/transactions", genBody, apiKey)
+
+            if (submitCode != 200) {
+              Json.obj("error" -> s"Transaction submission failed ($submitCode)".asJson, "detail" -> submitBody.asJson)
+            } else {
+              val txId = parse(submitBody).getOrElse(Json.fromString(submitBody))
+                .asString.getOrElse(submitBody.replaceAll("\"", ""))
+              val signedTx = parse(genBody).getOrElse(Json.Null)
+              val trackerBoxId = signedTx.hcursor
+                .downField("outputs").downArray
+                .downField("boxId").as[String].getOrElse("")
+
+              // Write tracker secret
+              val secretDir = new java.io.File(System.getProperty("user.home"), ".chaincash-secrets")
+              secretDir.mkdirs()
+              val secretFile = new java.io.File(secretDir, s"tracker-${trackerNftId.take(8)}.json")
+              val secretJson = Json.obj(
+                "trackerNftId" -> trackerNftId.asJson,
+                "trackerSecretHex" -> Base16.encode(trackerSecret.toByteArray).asJson,
+                "trackerPubKeyHex" -> trackerPkHex.asJson,
+                "trackerBoxId" -> trackerBoxId.asJson
+              )
+              val writer = new java.io.FileWriter(secretFile)
+              writer.write(secretJson.spaces2)
+              writer.close()
+
+              Json.obj(
+                "txId" -> txId.asJson,
+                "trackerBoxId" -> trackerBoxId.asJson,
+                "trackerPubKeyHex" -> trackerPkHex.asJson,
+                "treeDigestHex" -> treeDigestHex.asJson,
+                "entryCount" -> entries.size.asJson,
+                "entries" -> entryDetails.asJson,
+                "trackerNftId" -> trackerNftId.asJson,
+                "status" -> "submitted".asJson,
+                "secretFile" -> secretFile.getAbsolutePath.asJson
+              )
+            }
+          }
+        } catch {
+          case e: Exception =>
+            Json.obj("error" -> s"Tracker update failed: ${e.getMessage}".asJson)
+        }
+      }
+    }
+  })
+
   // ===== /reserve/redeem =====
   // Builds and submits a redemption transaction against the Basis reserve contract.
   // Loads all signing keys from ~/.chaincash-secrets/ — no secrets in the request.
@@ -736,8 +877,11 @@ object SidecarServer extends App {
       val redeemAmount = cursor.downField("redeemAmountNanoErg").as[Long].getOrElse(0L)
       val apiKey = cursor.downField("nodeApiKey").as[String].getOrElse("")
       // Existing reserve tree entries from prior redemptions (needed for proof building)
-      // Each entry: { "ownerPubKeyHex": "...", "receiverPubKeyHex": "...", "redeemedNanoErg": N }
       val existingEntries = cursor.downField("existingReserveEntries")
+        .as[Vector[Json]].getOrElse(Vector.empty)
+      // All tracker tree entries (for multi-entry tracker tree proof generation)
+      // Each: { "ownerPubKeyHex": "...", "receiverPubKeyHex": "...", "totalDebtNanoErg": N }
+      val trackerEntries = cursor.downField("trackerEntries")
         .as[Vector[Json]].getOrElse(Vector.empty)
 
       if (reserveBoxId.isEmpty || trackerBoxId.isEmpty || ownerPubKeyHex.isEmpty ||
@@ -784,10 +928,40 @@ object SidecarServer extends App {
           val trackerSigBytes = GroupElementSerializer.toBytes(trackerSig._1) ++ trackerSig._2.toByteArray
 
           // --- Step 5: Build tracker AVL tree lookup proof ---
-          // Rebuild the same tree as /tracker/deploy to get the same proof
+          // Rebuild the tracker tree with ALL entries, sorted by key for deterministic structure
           val basisPlasmaParams = PlasmaParameters(32, None)
-          val trackerMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, basisPlasmaParams)
-          trackerMap.insert((key, Longs.toByteArray(totalDebt)))
+          val trackerMap = if (trackerEntries.nonEmpty) {
+            val sortedTrackerEntries = parseAndSortTrackerEntries(trackerEntries)
+            buildTrackerPlasmaMap(sortedTrackerEntries)
+          } else {
+            // Single-entry fallback (backward compatible)
+            val m = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, basisPlasmaParams)
+            m.insert((key, Longs.toByteArray(totalDebt)))
+            m
+          }
+          // Validate tracker tree digest matches on-chain
+          // Use byTokenId endpoint (more reliably indexed than byId on private testnet)
+          val trackerReconstructedDigest = Base16.encode(trackerMap.ergoValue.getValue.digest.toArray)
+          val (_, tokenBoxBody) = nodeGet(s"/blockchain/box/byTokenId/$trackerNftId")
+          val tokenBoxItems = parse(tokenBoxBody).getOrElse(Json.Null)
+            .hcursor.downField("items").as[Vector[Json]].getOrElse(Vector.empty)
+          val liveTrackerBox = tokenBoxItems.find(b =>
+            b.hcursor.downField("boxId").as[String].getOrElse("") == trackerBoxId &&
+            b.hcursor.downField("spentTransactionId").as[String].toOption.isEmpty
+          )
+          val onChainTrackerR5 = liveTrackerBox.flatMap(_.hcursor
+            .downField("additionalRegisters").downField("R5")
+            .as[String].toOption).getOrElse("")
+          val onChainTrackerDigest = if (onChainTrackerR5.length > 8) onChainTrackerR5.drop(2).dropRight(6) else ""
+
+          if (onChainTrackerDigest.nonEmpty && trackerReconstructedDigest != onChainTrackerDigest) {
+            throw new Exception(
+              s"Tracker tree digest mismatch! reconstructed=$trackerReconstructedDigest " +
+              s"onChain=$onChainTrackerDigest. " +
+              s"The trackerEntries do not reproduce the on-chain tracker tree."
+            )
+          }
+
           val trackerLookupProof = trackerMap.lookUp(key).proof.bytes
 
           // --- Step 6: Build reserve tree insertion proof ---

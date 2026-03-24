@@ -447,9 +447,10 @@ export async function validateTrackerAlignment(
 const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
 
 /**
- * Deploy a tracker box via the sidecar and record it in DB.
+ * Deploy/update a tracker box via the sidecar with all entries (multi-pair support).
+ * Builds the full desired entry set: existing entries from current TrackerBox + new/updated pair.
+ * Calls /tracker/update to create a new tracker box with a multi-entry tree.
  * Waits for on-chain confirmation before returning.
- * Returns the new TrackerDeployment record.
  */
 export async function deployAndRecordTracker(params: {
   trackerNftId: string;
@@ -459,33 +460,58 @@ export async function deployAndRecordTracker(params: {
 }): Promise<{ trackerBoxId: string; deployment: any }> {
   const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
 
-  // Call sidecar
-  const res = await fetch(`${SIDECAR_URL}/tracker/deploy`, {
+  // Build full entry set: existing entries + new/updated pair
+  const currentBox = await getCurrentTrackerBox(trackerNftId);
+  const entries: { ownerPubKeyHex: string; receiverPubKeyHex: string; totalDebtNanoErg: number }[] = [];
+
+  if (currentBox) {
+    // Carry forward existing entries (excluding the pair being updated)
+    for (const e of currentBox.entries) {
+      if (e.debtorPubKey === debtorPubKey && e.creditorPubKey === creditorPubKey) continue;
+      entries.push({
+        ownerPubKeyHex: e.debtorPubKey,
+        receiverPubKeyHex: e.creditorPubKey,
+        totalDebtNanoErg: Number(e.totalDebtNanoErg),
+      });
+    }
+  }
+  // Add the new/updated pair
+  entries.push({ ownerPubKeyHex: debtorPubKey, receiverPubKeyHex: creditorPubKey, totalDebtNanoErg });
+
+  // Call sidecar /tracker/update with full entry set
+  const res = await fetch(`${SIDECAR_URL}/tracker/update`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ownerPubKeyHex: debtorPubKey,
-      receiverPubKeyHex: creditorPubKey,
-      totalDebtNanoErg,
-      trackerNftId,
-      nodeApiKey: ERGO_NODE_API_KEY,
-    }),
+    body: JSON.stringify({ trackerNftId, entries, nodeApiKey: ERGO_NODE_API_KEY }),
   });
   const result = await res.json();
   if (result.error) {
-    throw new ReconcileError(`Tracker deploy failed: ${result.error}`, 502);
+    throw new ReconcileError(`Tracker update failed: ${result.error}`, 502);
   }
 
-  // Record in DB (supersedes prior current deployment)
-  const deployment = await recordTrackerDeployment({
-    trackerNftId,
-    debtorPubKey,
-    creditorPubKey,
-    totalDebtNanoErg,
-    boxId: result.trackerBoxId,
-    trackerPubKeyHex: result.trackerPubKeyHex,
-    treeDigestHex: result.treeDigestHex,
-    txId: result.txId,
+  // Record in DB: new TrackerBox with ALL entries
+  await prisma.trackerBox.updateMany({
+    where: { trackerNftId, isCurrent: true },
+    data: { isCurrent: false },
+  });
+
+  const newBox = await prisma.trackerBox.create({
+    data: {
+      trackerNftId,
+      boxId: result.trackerBoxId,
+      trackerPubKeyHex: result.trackerPubKeyHex,
+      treeDigestHex: result.treeDigestHex,
+      txId: result.txId,
+      isCurrent: true,
+      entries: {
+        create: entries.map((e) => ({
+          debtorPubKey: e.ownerPubKeyHex,
+          creditorPubKey: e.receiverPubKeyHex,
+          totalDebtNanoErg: BigInt(e.totalDebtNanoErg),
+        })),
+      },
+    },
+    include: { entries: true },
   });
 
   // Wait for on-chain confirmation (tracker must be confirmed before redemption tx can reference it)
@@ -508,7 +534,7 @@ export async function deployAndRecordTracker(params: {
     );
   }
 
-  return { trackerBoxId: result.trackerBoxId, deployment };
+  return { trackerBoxId: result.trackerBoxId, deployment: newBox };
 }
 
 /**

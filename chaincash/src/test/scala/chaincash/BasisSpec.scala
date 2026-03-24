@@ -346,6 +346,71 @@ class BasisSpec extends PropSpec with Matchers with ScalaCheckDrivenPropertyChec
     }
   }
 
+  property("basis redemption should work with multi-entry tracker tree") {
+    createMockedErgoClient(MockData(Nil, Nil)).execute { implicit ctx: BlockchainContext =>
+
+      // Two creditors: receiverPk (existing) and a second receiver
+      val receiver2Secret = SigUtils.randBigInt
+      val receiver2Pk = Constants.g.exp(receiver2Secret.bigInteger)
+
+      val totalDebtAB = 500000000L // 0.5 ERG debt A→B
+      val totalDebtAC = 300000000L // 0.3 ERG debt A→C
+      val redeemAmountAB = 200000000L // redeem 0.2 ERG from A→B
+
+      val keyAB = mkKey(ownerPk, receiverPk)
+      val keyAC = mkKey(ownerPk, receiver2Pk)
+
+      // Build multi-entry tracker tree with BOTH pairs
+      val trackerMap = new PlasmaMap[Array[Byte], Array[Byte]](AvlTreeFlags.InsertOnly, chainCashPlasmaParameters)
+      trackerMap.insert((keyAB, Longs.toByteArray(totalDebtAB)))
+      trackerMap.insert((keyAC, Longs.toByteArray(totalDebtAC)))
+      val trackerTree = trackerMap.ergoValue
+      val trackerLookupProofAB = trackerMap.lookUp(keyAB).proof.bytes
+
+      // Verify both entries are in the tree
+      val lookupAB = trackerMap.lookUp(keyAB).response.head.tryOp.get
+      val lookupAC = trackerMap.lookUp(keyAC).response.head.tryOp.get
+      lookupAB.isDefined shouldBe true
+      lookupAC.isDefined shouldBe true
+      Longs.fromByteArray(lookupAB.get) shouldBe totalDebtAB
+      Longs.fromByteArray(lookupAC.get) shouldBe totalDebtAC
+
+      // Signatures for A→B redemption
+      val messageAB = mkMessage(keyAB, totalDebtAB)
+      val reserveSigBytes = mkSigBytes(SigUtils.sign(messageAB, ownerSecret))
+      val trackerSigBytes = mkSigBytes(SigUtils.sign(messageAB, trackerSecret))
+
+      // Reserve tree: empty → insert A→B entry
+      val TreeAndProof(initialTree, nextTree, insertProofBytes) = mkTreeAndProof(keyAB, redeemAmountAB)
+
+      val basisInput = mkBasisInput(
+        minValue + totalDebtAB + feeValue, initialTree,
+        receiverPk, reserveSigBytes, totalDebtAB, insertProofBytes, trackerSigBytes,
+        lookupProofBytes = None,
+        trackerLookupProofBytes = Some(trackerLookupProofAB)
+      )
+
+      // Tracker data input with multi-entry tree
+      val trackerDataInput = mkTrackerDataInput(trackerTree)
+
+      val basisOutput = createOut(
+        Constants.basisContract,
+        minValue + totalDebtAB - redeemAmountAB + feeValue,
+        Array(ErgoValue.of(ownerPk), nextTree, ErgoValue.of(trackerNFTBytes)),
+        Array(new ErgoToken(basisTokenId, 1))
+      )
+
+      val redemptionOutput = createOut(trueScript, redeemAmountAB, Array(), Array())
+
+      noException should be thrownBy {
+        createTx(
+          Array(basisInput), Array(trackerDataInput), Array(basisOutput, redemptionOutput),
+          fee = None, changeAddress, Array(receiverSecret.toString()), false
+        )
+      }
+    }
+  }
+
   property("basis top-up should work") {
     createMockedErgoClient(MockData(Nil, Nil)).execute { implicit ctx: BlockchainContext =>
 
