@@ -722,6 +722,18 @@ object SidecarServer extends App {
               writer.write(secretJson.spaces2)
               writer.close()
 
+              // Register scan for tracker NFT
+              val trackerScanReq = Json.obj(
+                "scanName" -> s"Tracker ${trackerNftId.take(8)}".asJson,
+                "walletInteraction" -> "shared".asJson,
+                "removeOffchain" -> true.asJson,
+                "trackingRule" -> Json.obj(
+                  "predicate" -> "containsAsset".asJson,
+                  "assetId" -> trackerNftId.asJson
+                )
+              )
+              nodePost("/scan/register", trackerScanReq.noSpaces, apiKey)
+
               Json.obj(
                 "txId" -> txId.asJson,
                 "trackerBoxId" -> trackerBoxId.asJson,
@@ -841,6 +853,18 @@ object SidecarServer extends App {
               writer.write(secretJson.spaces2)
               writer.close()
 
+              // Register scan for tracker NFT so UTXO set reliably indexes tracker boxes
+              val trackerScanRequest = Json.obj(
+                "scanName" -> s"Tracker ${trackerNftId.take(8)}".asJson,
+                "walletInteraction" -> "shared".asJson,
+                "removeOffchain" -> true.asJson,
+                "trackingRule" -> Json.obj(
+                  "predicate" -> "containsAsset".asJson,
+                  "assetId" -> trackerNftId.asJson
+                )
+              )
+              val (scanCode, _) = nodePost("/scan/register", trackerScanRequest.noSpaces, apiKey)
+
               Json.obj(
                 "txId" -> txId.asJson,
                 "trackerBoxId" -> trackerBoxId.asJson,
@@ -850,6 +874,7 @@ object SidecarServer extends App {
                 "entries" -> entryDetails.asJson,
                 "trackerNftId" -> trackerNftId.asJson,
                 "status" -> "submitted".asJson,
+                "scanRegistered" -> (scanCode == 200).asJson,
                 "secretFile" -> secretFile.getAbsolutePath.asJson
               )
             }
