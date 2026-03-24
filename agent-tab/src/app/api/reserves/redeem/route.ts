@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned } from "@/lib/reconcile";
+import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned, ensureSecretFile } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -64,6 +64,19 @@ export async function POST(req: NextRequest) {
       pendingTxId: existingPending.txId,
       hint: "Wait for confirmation or call this endpoint again to trigger auto-recovery",
     }, { status: 409 });
+  }
+
+  // --- Step 1c: Ensure secret files exist for owner and receiver ---
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: reserve.customerId } });
+    const provider = await prisma.provider.findUnique({ where: { id: obligation.providerId } });
+    ensureSecretFile("owner", obligation.debtorPubKey, customer?.privateKey ?? null);
+    ensureSecretFile("receiver", obligation.creditorPubKey, provider?.privateKey ?? null);
+  } catch (e: any) {
+    if (e instanceof ReconcileError) {
+      return NextResponse.json({ error: e.message, phase: "secret-provisioning" }, { status: e.statusCode });
+    }
+    return NextResponse.json({ error: e.message, phase: "secret-provisioning" }, { status: 500 });
   }
 
   // --- Step 2: Contract version guardrail ---

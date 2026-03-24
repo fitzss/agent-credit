@@ -235,6 +235,7 @@ model TrackerDeployment {
   isCurrent           Boolean       @default(true) // false for superseded deployments
   createdAt           DateTime      @default(now())
 
-  // Unique: only one current deployment per (nft, debtor, creditor) triple
-  @@unique([trackerNftId, debtorPubKey, creditorPubKey, isCurrent])
+  // Application-level enforcement: only one isCurrent=true per (nft, debtor, creditor) triple.
+  // No DB unique constraint because multiple isCurrent=false records are valid (deployment history).
+  @@index([trackerNftId, debtorPubKey, creditorPubKey, isCurrent])
 }

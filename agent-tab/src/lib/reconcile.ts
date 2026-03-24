@@ -1,8 +1,67 @@
 import { prisma } from "@/lib/prisma";
 import { getReserveStatus } from "@/lib/sidecar-client";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
 const NANO_PER_CREDIT = 1_000_000_000;
+const SECRETS_DIR = path.join(os.homedir(), ".chaincash-secrets");
+
+/**
+ * Ensure a secret file exists for a given role (owner/receiver) and pubkey.
+ *
+ * - If missing: creates it from the provided secretHex, mode 0o600
+ * - If exists and pubKeyHex matches: no-op
+ * - If exists but pubKeyHex mismatches: throws (never overwrites)
+ * - If secretHex is empty/null in DB: throws with clear error
+ *
+ * File naming: {role}-{first8hexOfPubKey}.json
+ * Contents: { "pubKeyHex": "...", "secretHex": "..." }
+ */
+export function ensureSecretFile(
+  role: "owner" | "receiver",
+  pubKeyHex: string,
+  secretHex: string | null,
+): void {
+  if (!secretHex) {
+    throw new ReconcileError(
+      `No private key in DB for ${role} (pubkey ${pubKeyHex.substring(0, 16)}...). Cannot provision secret file.`,
+      400,
+    );
+  }
+
+  if (!fs.existsSync(SECRETS_DIR)) {
+    fs.mkdirSync(SECRETS_DIR, { mode: 0o700 });
+  }
+
+  const prefix = pubKeyHex.substring(0, 8);
+  const filename = `${role}-${prefix}.json`;
+  const filepath = path.join(SECRETS_DIR, filename);
+
+  if (fs.existsSync(filepath)) {
+    // Verify match
+    try {
+      const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
+      if (existing.pubKeyHex !== pubKeyHex) {
+        throw new ReconcileError(
+          `Secret file ${filename} exists but pubKeyHex mismatches. ` +
+          `File has ${existing.pubKeyHex?.substring(0, 16)}..., expected ${pubKeyHex.substring(0, 16)}... ` +
+          `Refusing to overwrite. Remove the file manually if the old key is no longer needed.`,
+          409,
+        );
+      }
+      // Match — nothing to do
+    } catch (e) {
+      if (e instanceof ReconcileError) throw e;
+      throw new ReconcileError(`Cannot read existing secret file ${filename}: ${e}`, 500);
+    }
+  } else {
+    // Create
+    const content = JSON.stringify({ pubKeyHex, secretHex }, null, 2);
+    fs.writeFileSync(filepath, content, { mode: 0o600 });
+  }
+}
 
 export interface ReconcileInput {
   reserveId: string;
