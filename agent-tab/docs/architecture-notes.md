@@ -37,7 +37,9 @@ This computation lives in `computeCumulativeTrackerDebt()` in `reconcile.ts`. Al
 | Operation on first redemption | `.insert(key → redeemAmount)` |
 | Operation on subsequent redemption | `.update(key → newCumulativeRedeemed)` |
 
-The tree stores cumulative redeemed amounts, not individual redemption events. After two redemptions of 200M and 150M for the same pair, the tree value is 350M (not two separate entries).
+The tree stores cumulative redeemed amounts, not individual events. After two redemptions of 200M and 150M for the same pair, the tree value is 350M.
+
+**Proof reconstruction**: Agent Tab sends `existingReserveEntries` (aggregated per pair from settlement history) to the sidecar. The sidecar rebuilds the PlasmaMap, validates its digest against on-chain R5, then generates the insert or update proof.
 
 ## Tracker Tree (R5) Semantics
 
@@ -48,9 +50,9 @@ The tree stores cumulative redeemed amounts, not individual redemption events. A
 | Flags | InsertOnly |
 | Key size | 32 bytes |
 
-The tracker tree commits to the total debt. Each `/tracker/deploy` creates a fresh tree with a single entry. The tracker box is only used as a data input (never spent by the redemption tx).
+Each `/tracker/deploy` creates a fresh single-entry tree. The tracker box is only used as a data input (never spent by the redemption tx).
 
-**Current limitation**: each `/tracker/deploy` creates a tree with one entry. For a multi-pair reserve, each pair needs its own tracker deployment. The tracker NFT moves to the new box each time, losing the previous pair's entry.
+**Tracker lifecycle**: Tracked in `TrackerDeployment` model. Each deploy supersedes the prior one (`isCurrent` flag). The `/api/reserves/redeem` endpoint auto-deploys a new tracker when the current one is stale or missing. Cumulative `totalDebtNanoErg` is auto-computed from settlement history.
 
 ## Insert vs Update Decision
 
@@ -61,55 +63,73 @@ The contract determines this from context var #7 (`lookupProofOpt`):
 | No | First redemption for this pair | `.insert()` |
 | Yes | Subsequent redemption (key exists) | `.update()` |
 
-The sidecar detects which case applies by checking whether the key exists in the reconstructed PlasmaMap. Agent Tab doesn't need to know — it just passes `existingReserveEntries` and the sidecar figures it out.
+The sidecar detects which case applies by checking whether the key exists in the reconstructed PlasmaMap. Agent Tab doesn't need to know — it passes `existingReserveEntries` and the sidecar figures it out.
 
 ## Chain Truth vs App Truth
 
 | Data | Chain truth | App truth | Reconciliation |
 |---|---|---|---|
-| Reserve value (nanoERG) | Box value on-chain | `reserve.valueNanoErg` | Updated on reconciliation + refresh |
-| Reserve R5 digest | On-chain register | `reserve.avlTreeDigest` | Updated on reconciliation + refresh |
+| Reserve value | Box value on-chain | `reserve.valueNanoErg` | Updated on reconciliation + refresh |
+| Reserve R5 digest | On-chain register | `reserve.avlTreeDigest` | Updated; drift detected pre-redemption |
 | Reserve box ID | Current UTXO | `reserve.boxId` | Updated on reconciliation |
-| Cumulative redeemed per pair | In reserve R5 tree | Sum of `SettlementEvent.amount` | Must match; drift detected pre-redemption |
-| Cumulative total debt per pair | In tracker R5 tree | `computeCumulativeTrackerDebt()` | Must match tracker deploy value |
+| Cumulative redeemed | Reserve R5 tree | Sum of `SettlementEvent.amount` per pair | Must match; verified via digest |
+| Cumulative total debt | Tracker R5 tree | `computeCumulativeTrackerDebt()` | Must match `TrackerDeployment.totalDebtNanoErg` |
 | Contract version | Reserve box ErgoTree | `reserve.contractVersion` | Derived from `reserveAddress` on refresh |
-| Obligation current amount | N/A (app-only) | `obligation.currentAmount` | Reduced by reconciliation |
+| Tracker box | On-chain UTXO | `TrackerDeployment.boxId` | Recorded at deploy time |
+| Obligation amount | N/A (app-only) | `obligation.currentAmount` | Reduced by reconciliation |
 
 **Rule**: chain state is always authoritative. App state is updated to match chain via reconciliation. Pre-redemption checks detect drift before proof generation.
 
+## Automation Boundary
+
+### Fully automatic (no manual steps)
+
+- Secret file provisioning: auto-created from DB `customer.privateKey` / `provider.privateKey`
+- Tracker deployment: auto-triggered when stale or missing, cumulative debt auto-computed
+- Pending redemption recovery: auto-run before each `/api/reserves/redeem` call
+- Reserve version derivation: auto-derived from `reserveAddress` vs sidecar contract
+- Reserve tree proof reconstruction: auto-built from aggregated settlement history
+- Insert vs update decision: auto-detected by sidecar from reconstructed PlasmaMap
+
+### Operator-initiated (one call, rest is automatic)
+
+- Redemption: `POST /api/reserves/redeem { reserveId, obligationId }` → everything else follows
+- Reserve deployment: mint token + sidecar deploy + register in Agent Tab
+- Obligation creation: standard Agent Tab API call
+
+### Still manual
+
+- Increasing obligation debt after settlement (updating `currentAmount`, resetting `settlementStatus`)
+- Initial reserve deployment (token minting, sidecar deploy, DB registration)
+
 ## What Remains Prototype-Grade
 
-### Tracker lifecycle
+### Private key storage
 
-- No Agent Tab DB model for tracker boxes. Discovery is dynamic (scan chain for NFT).
-- Each `/tracker/deploy` creates a fresh single-entry tree, discarding the previous pair's entry.
-- Tracker keypair is regenerated each deploy. Old tracker signatures for the same pair become invalid if the tracker box is redeployed.
-- No multi-pair tracker tree support.
+- Owner and receiver private keys stored as plaintext in Agent Tab DB (`customer.privateKey`, `provider.privateKey`).
+- Written to `~/.chaincash-secrets/` as JSON files (mode 0600) at redemption time.
+- No key rotation, no HSM, no encrypted storage.
+- **Testnet only** — not suitable for production key management.
 
-### Obligation-tracker alignment
+### Single-pair tracker trees
 
-- Agent Tab obligations use `currentAmount` (unredeemed balance). The tracker tree uses cumulative `totalDebt`. The mapping between these is computed at redemption time, not maintained as a persistent invariant.
-- Increasing debt for a second redemption requires: (1) updating `obligation.currentAmount`, (2) deploying a new tracker with the updated cumulative totalDebt. These are manual steps.
-
-### Secret management
-
-- Owner and receiver private keys must be pre-written to `~/.chaincash-secrets/` as JSON files (mode 600).
-- Tracker secret is auto-created by `/tracker/deploy`.
-- No key rotation, no HSM integration, no encrypted storage.
-- Testnet only — not suitable for production key management.
-
-### Reserve deployment
-
-- V2 reserve deployment requires `MintToken` utility (AppKit-based) because the wallet API can't reliably mint tokens with 500+ boxes.
-- `reserveAddress` must be set on the reserve record for version derivation to work. The standard `/api/reserves` POST flow does this automatically, but manually created reserves need backfill.
+- Each `/tracker/deploy` creates a tree with one entry, moving the tracker NFT.
+- For a reserve with multiple creditors, each pair needs its own tracker deployment.
+- The NFT move means only one pair's tracker is "live" at a time on-chain.
+- Auto-deploy handles this transparently for sequential redemptions, but concurrent multi-pair redemption is not supported.
 
 ### Confirmation handling
 
-- 30-second poll window. If block time exceeds this, redemption goes to `pending` status.
-- Recovery is automatic on next `/api/reserves/redeem` call or via `/recover-pending`.
+- 30-second poll for redemption tx, 2-minute poll for tracker deploy.
+- If block time exceeds this, state goes to `pending` and auto-recovers on next call.
 - No webhook or event-driven confirmation — relies on polling.
 
 ### Denomination
 
-- 1 credit = 1 ERG = 1,000,000,000 nanoERG. Hardcoded constant `NANO_PER_CREDIT`.
+- 1 credit = 1 ERG = 1,000,000,000 nanoERG. Hardcoded `NANO_PER_CREDIT`.
 - Float arithmetic for credits. No fixed-point or decimal library.
+
+### Reserve deployment
+
+- Token minting requires `MintToken` utility (AppKit) due to wallet API limitation with many mining boxes.
+- Reserve deployment is a multi-step process (mint → sidecar deploy → DB register).
