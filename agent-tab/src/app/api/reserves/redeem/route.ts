@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries } from "@/lib/reconcile";
+import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, validateTrackerAlignment } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -66,23 +66,7 @@ export async function POST(req: NextRequest) {
     }, { status: 409 });
   }
 
-  // --- Step 2: Discover tracker box on-chain ---
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
-  let trackerBoxId: string;
-  try {
-    const res = await fetch(`${nodeUrl}/blockchain/box/byTokenId/${reserve.trackerNftId}`);
-    const data = await res.json();
-    const items: any[] = data.items || [];
-    const unspent = items.filter((b: any) => !b.spentTransactionId);
-    if (unspent.length === 0) {
-      return NextResponse.json({ error: "Tracker box not found on-chain" }, { status: 404 });
-    }
-    trackerBoxId = unspent[0].boxId;
-  } catch (e: any) {
-    return NextResponse.json({ error: `Tracker discovery failed: ${e.message}` }, { status: 502 });
-  }
-
-  // --- Step 2b: Contract version guardrail ---
+  // --- Step 2: Contract version guardrail ---
   // v1 reserves (insert-only) only support one redemption per (owner, receiver) pair.
   // v2 reserves (insert+update) support repeated same-pair redemption.
   const existingReserveEntries = await gatherExistingReserveEntries(reserve.customerId);
@@ -112,7 +96,25 @@ export async function POST(req: NextRequest) {
     redeemAmountNanoErg
   );
 
-  // --- Step 3b: Pre-check R5 digest ---
+  // --- Step 3b: Validate tracker deployment alignment ---
+  // The tracker tree must have committed exactly totalDebtNanoErg for this pair.
+  let trackerBoxId: string;
+  try {
+    const trackerCheck = await validateTrackerAlignment(
+      reserve.trackerNftId,
+      obligation.debtorPubKey,
+      obligation.creditorPubKey,
+      totalDebtNanoErg,
+    );
+    trackerBoxId = trackerCheck.trackerBoxId;
+  } catch (e: any) {
+    if (e instanceof ReconcileError) {
+      return NextResponse.json({ error: e.message, ...e.detail }, { status: e.statusCode });
+    }
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+
+  // --- Step 3c: Pre-check R5 digest ---
   const chainState = await getReserveStatus(reserve.reserveTokenId);
   if (!chainState.found) {
     return NextResponse.json({ error: "Reserve not found on-chain" }, { status: 404 });

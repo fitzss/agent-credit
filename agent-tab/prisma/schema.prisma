@@ -219,3 +219,22 @@ model PendingRedemption {
   reserve             Reserve       @relation(fields: [reserveId], references: [id])
   obligation          ObligationState @relation(fields: [obligationId], references: [id])
 }
+
+// Tracks on-chain tracker box deployments for (debtor, creditor) pairs.
+// Each /tracker/deploy creates a new record and supersedes the previous one.
+model TrackerDeployment {
+  id                  String        @id @default(uuid())
+  trackerNftId        String        // the tracker NFT token ID (shared across deploys)
+  debtorPubKey        String        // owner of the reserve / debtor
+  creditorPubKey      String        // receiver / creditor
+  totalDebtNanoErg    BigInt        // cumulative debt committed in tracker tree
+  boxId               String        // on-chain tracker box ID
+  trackerPubKeyHex    String        // tracker's Schnorr public key (R4)
+  treeDigestHex       String        // tracker tree R5 digest
+  txId                String?       // deployment transaction ID
+  isCurrent           Boolean       @default(true) // false for superseded deployments
+  createdAt           DateTime      @default(now())
+
+  // Unique: only one current deployment per (nft, debtor, creditor) triple
+  @@unique([trackerNftId, debtorPubKey, creditorPubKey, isCurrent])
+}

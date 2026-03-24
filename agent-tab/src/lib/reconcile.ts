@@ -248,3 +248,102 @@ export async function gatherExistingReserveEntries(customerId: string) {
       redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
     }));
 }
+
+// --- Tracker lifecycle ---
+
+export interface TrackerDeploymentRecord {
+  trackerNftId: string;
+  debtorPubKey: string;
+  creditorPubKey: string;
+  totalDebtNanoErg: number;
+  boxId: string;
+  trackerPubKeyHex: string;
+  treeDigestHex: string;
+  txId?: string;
+}
+
+/**
+ * Record a tracker deployment. Supersedes any prior current deployment
+ * for the same (nft, debtor, creditor) triple.
+ */
+export async function recordTrackerDeployment(record: TrackerDeploymentRecord) {
+  // Mark any existing current deployment as superseded
+  await prisma.trackerDeployment.updateMany({
+    where: {
+      trackerNftId: record.trackerNftId,
+      debtorPubKey: record.debtorPubKey,
+      creditorPubKey: record.creditorPubKey,
+      isCurrent: true,
+    },
+    data: { isCurrent: false },
+  });
+
+  return prisma.trackerDeployment.create({
+    data: {
+      trackerNftId: record.trackerNftId,
+      debtorPubKey: record.debtorPubKey,
+      creditorPubKey: record.creditorPubKey,
+      totalDebtNanoErg: BigInt(record.totalDebtNanoErg),
+      boxId: record.boxId,
+      trackerPubKeyHex: record.trackerPubKeyHex,
+      treeDigestHex: record.treeDigestHex,
+      txId: record.txId,
+      isCurrent: true,
+    },
+  });
+}
+
+/**
+ * Find the current tracker deployment for a (nft, debtor, creditor) triple.
+ * Returns null if no tracker has been deployed for this pair.
+ */
+export async function getCurrentTrackerDeployment(
+  trackerNftId: string,
+  debtorPubKey: string,
+  creditorPubKey: string,
+) {
+  return prisma.trackerDeployment.findFirst({
+    where: { trackerNftId, debtorPubKey, creditorPubKey, isCurrent: true },
+  });
+}
+
+/**
+ * Validate that the current tracker deployment's committed debt matches
+ * the required cumulative totalDebt for an upcoming redemption.
+ *
+ * Throws ReconcileError if:
+ * - No tracker deployment exists for this pair
+ * - The tracker's committed debt doesn't match the required totalDebt
+ */
+export async function validateTrackerAlignment(
+  trackerNftId: string,
+  debtorPubKey: string,
+  creditorPubKey: string,
+  requiredTotalDebtNanoErg: number,
+): Promise<{ trackerBoxId: string }> {
+  const tracker = await getCurrentTrackerDeployment(trackerNftId, debtorPubKey, creditorPubKey);
+
+  if (!tracker) {
+    throw new ReconcileError(
+      "No tracker deployment found for this (debtor, creditor) pair. Run /tracker/deploy first.",
+      404,
+      { trackerNftId, debtorPubKey: debtorPubKey.substring(0, 16) + "...", creditorPubKey: creditorPubKey.substring(0, 16) + "..." }
+    );
+  }
+
+  const committedDebt = Number(tracker.totalDebtNanoErg);
+  if (committedDebt !== requiredTotalDebtNanoErg) {
+    throw new ReconcileError(
+      "Tracker cumulative debt is stale: committed debt does not match required totalDebt. Redeploy tracker with updated cumulative debt.",
+      409,
+      {
+        committedDebtNanoErg: committedDebt,
+        requiredTotalDebtNanoErg,
+        trackerBoxId: tracker.boxId,
+        hint: "Call /tracker/deploy with totalDebtNanoErg=" + requiredTotalDebtNanoErg,
+      }
+    );
+  }
+
+  return { trackerBoxId: tracker.boxId };
+}
