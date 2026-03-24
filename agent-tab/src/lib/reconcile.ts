@@ -229,6 +229,10 @@ export async function computeCumulativeTrackerDebt(
 /**
  * Gather existing reserve tree entries from settlement history.
  * Used to reconstruct the PlasmaMap state for proof generation.
+ *
+ * IMPORTANT: Aggregates by (debtor, creditor) pair. The reserve tree stores
+ * ONE cumulative value per pair, not individual settlement amounts. Multiple
+ * settlements for the same pair must be summed into a single entry.
  */
 export async function gatherExistingReserveEntries(customerId: string) {
   const priorSettlements = await prisma.settlementEvent.findMany({
@@ -240,13 +244,23 @@ export async function gatherExistingReserveEntries(customerId: string) {
     include: { obligationState: true },
   });
 
-  return priorSettlements
-    .filter((s) => s.redemptionTxId)
-    .map((s) => ({
-      ownerPubKeyHex: s.obligationState.debtorPubKey,
-      receiverPubKeyHex: s.obligationState.creditorPubKey,
-      redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
-    }));
+  // Aggregate by (debtor, creditor) pair — the reserve tree has one key per pair
+  const pairMap = new Map<string, { ownerPubKeyHex: string; receiverPubKeyHex: string; redeemedNanoErg: number }>();
+  for (const s of priorSettlements) {
+    if (!s.redemptionTxId) continue;
+    const pairKey = `${s.obligationState.debtorPubKey}|${s.obligationState.creditorPubKey}`;
+    const existing = pairMap.get(pairKey);
+    if (existing) {
+      existing.redeemedNanoErg += Math.round(s.amount * NANO_PER_CREDIT);
+    } else {
+      pairMap.set(pairKey, {
+        ownerPubKeyHex: s.obligationState.debtorPubKey,
+        receiverPubKeyHex: s.obligationState.creditorPubKey,
+        redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
+      });
+    }
+  }
+  return Array.from(pairMap.values());
 }
 
 // --- Tracker lifecycle ---
@@ -346,4 +360,103 @@ export async function validateTrackerAlignment(
   }
 
   return { trackerBoxId: tracker.boxId };
+}
+
+const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
+
+/**
+ * Deploy a tracker box via the sidecar and record it in DB.
+ * Waits for on-chain confirmation before returning.
+ * Returns the new TrackerDeployment record.
+ */
+export async function deployAndRecordTracker(params: {
+  trackerNftId: string;
+  debtorPubKey: string;
+  creditorPubKey: string;
+  totalDebtNanoErg: number;
+}): Promise<{ trackerBoxId: string; deployment: any }> {
+  const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
+
+  // Call sidecar
+  const res = await fetch(`${SIDECAR_URL}/tracker/deploy`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ownerPubKeyHex: debtorPubKey,
+      receiverPubKeyHex: creditorPubKey,
+      totalDebtNanoErg,
+      trackerNftId,
+      nodeApiKey: ERGO_NODE_API_KEY,
+    }),
+  });
+  const result = await res.json();
+  if (result.error) {
+    throw new ReconcileError(`Tracker deploy failed: ${result.error}`, 502);
+  }
+
+  // Record in DB (supersedes prior current deployment)
+  const deployment = await recordTrackerDeployment({
+    trackerNftId,
+    debtorPubKey,
+    creditorPubKey,
+    totalDebtNanoErg,
+    boxId: result.trackerBoxId,
+    trackerPubKeyHex: result.trackerPubKeyHex,
+    treeDigestHex: result.treeDigestHex,
+    txId: result.txId,
+  });
+
+  // Wait for on-chain confirmation (tracker must be confirmed before redemption tx can reference it)
+  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
+  let confirmed = false;
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 10000));
+    try {
+      const checkRes = await fetch(`${nodeUrl}/blockchain/box/byId/${result.trackerBoxId}`);
+      const checkData = await checkRes.json();
+      if (checkData.boxId && !checkData.error) { confirmed = true; break; }
+    } catch { /* retry */ }
+  }
+
+  if (!confirmed) {
+    throw new ReconcileError(
+      "Tracker deployed but not yet confirmed on-chain after 2 minutes. Retry redemption later.",
+      202,
+      { trackerBoxId: result.trackerBoxId, txId: result.txId }
+    );
+  }
+
+  return { trackerBoxId: result.trackerBoxId, deployment };
+}
+
+/**
+ * Ensure a tracker deployment is aligned for the given pair and totalDebt.
+ * If aligned → returns trackerBoxId.
+ * If stale or missing → auto-deploys a new tracker, waits for confirmation, returns new trackerBoxId.
+ */
+export async function ensureTrackerAligned(params: {
+  trackerNftId: string;
+  debtorPubKey: string;
+  creditorPubKey: string;
+  totalDebtNanoErg: number;
+}): Promise<{ trackerBoxId: string; autoDeployed: boolean }> {
+  const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
+
+  const tracker = await getCurrentTrackerDeployment(trackerNftId, debtorPubKey, creditorPubKey);
+
+  if (tracker && Number(tracker.totalDebtNanoErg) === totalDebtNanoErg) {
+    // Aligned — use existing
+    return { trackerBoxId: tracker.boxId, autoDeployed: false };
+  }
+
+  // Stale or missing — auto-deploy
+  const reason = tracker
+    ? `stale (committed=${tracker.totalDebtNanoErg}, needed=${totalDebtNanoErg})`
+    : "missing";
+
+  const { trackerBoxId } = await deployAndRecordTracker({
+    trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg,
+  });
+
+  return { trackerBoxId, autoDeployed: true };
 }

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, validateTrackerAlignment } from "@/lib/reconcile";
+import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -96,22 +96,23 @@ export async function POST(req: NextRequest) {
     redeemAmountNanoErg
   );
 
-  // --- Step 3b: Validate tracker deployment alignment ---
-  // The tracker tree must have committed exactly totalDebtNanoErg for this pair.
+  // --- Step 3b: Ensure tracker deployment is aligned (auto-deploy if stale/missing) ---
   let trackerBoxId: string;
+  let trackerAutoDeployed = false;
   try {
-    const trackerCheck = await validateTrackerAlignment(
-      reserve.trackerNftId,
-      obligation.debtorPubKey,
-      obligation.creditorPubKey,
+    const trackerResult = await ensureTrackerAligned({
+      trackerNftId: reserve.trackerNftId,
+      debtorPubKey: obligation.debtorPubKey,
+      creditorPubKey: obligation.creditorPubKey,
       totalDebtNanoErg,
-    );
-    trackerBoxId = trackerCheck.trackerBoxId;
+    });
+    trackerBoxId = trackerResult.trackerBoxId;
+    trackerAutoDeployed = trackerResult.autoDeployed;
   } catch (e: any) {
     if (e instanceof ReconcileError) {
-      return NextResponse.json({ error: e.message, ...e.detail }, { status: e.statusCode });
+      return NextResponse.json({ error: e.message, phase: "tracker-deploy", ...e.detail }, { status: e.statusCode });
     }
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json({ error: e.message, phase: "tracker-deploy" }, { status: 500 });
   }
 
   // --- Step 3c: Pre-check R5 digest ---
@@ -203,6 +204,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({
       ...result, phase: "complete",
+      ...(trackerAutoDeployed ? { trackerAutoDeployed: true } : {}),
       ...(recovered.length > 0 ? { priorRecoveries: recovered } : {}),
     });
   } catch (e: any) {
