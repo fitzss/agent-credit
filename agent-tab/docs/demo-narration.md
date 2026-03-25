@@ -69,3 +69,54 @@ This is a prototype. The keys are testnet, the block times are variable, and the
 ---
 
 *Total narrated demo: ~6-8 minutes*
+
+---
+
+## If things go wrong live
+
+### Most likely: redemption returns `phase: "pending"`
+
+**What happened:** The transaction was accepted by the Ergo mempool but the block hasn't been mined yet within the poll window.
+
+**What to run:**
+```bash
+# Wait ~1 minute, then:
+curl -X POST http://localhost:3000/api/reserves/recover-pending \
+  -H 'Content-Type: application/json' \
+  -d '{"reserveId":"<id>"}'
+```
+
+**What to say:**
+> "This is actually demonstrating one of the system's strengths. The transaction is live in the mempool — the system detected the block is taking longer than expected and saved a recovery record. No manual intervention is needed in normal operation; the next API call would auto-recover. But let me trigger it explicitly so you can see the mechanism..."
+
+*Run the recovery. Show `status: "reconciled"`. Then show app/chain match.*
+
+> "Reconciled. The reserve decreased, the obligation is settled, and the settlement event has the on-chain transaction ID. The system self-healed."
+
+### Less likely: Agent Tab returns HTML / "pages not found"
+
+**What happened:** Next.js dev server started from wrong directory or cache corrupted.
+
+**What to run:**
+```bash
+pkill -f "next dev"
+cd agent-tab && rm -rf .next && DEMO_MODE=true npx next dev -p 3000
+# Wait 15 seconds, then warm up
+```
+
+**What to say:**
+> "Dev server cache issue — one moment while I restart. This is a development environment artifact, not a system issue."
+
+### Unlikely: transfer blocked by pending redemption
+
+**What happened:** A prior operation left a pending redemption record that blocks the transfer guardrail.
+
+**What to run:**
+```bash
+curl -X POST http://localhost:3000/api/reserves/recover-pending \
+  -H 'Content-Type: application/json' -d '{"reserveId":"<id>"}'
+# Then retry the transfer
+```
+
+**What to say:**
+> "There was an unreconciled transaction from earlier — the system blocks transfers when a redemption is in flight. Let me recover it first."

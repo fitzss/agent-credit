@@ -94,7 +94,7 @@ async function main(){
 }
 main().then(()=>p.\$disconnect())
 " 2>/dev/null
-sleep 1
+sleep 3
 RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
   -H 'Content-Type: application/json' \
   -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e","obligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44"}' 2>/dev/null || echo '{}')
