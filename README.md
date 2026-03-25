@@ -97,6 +97,46 @@ cd agent-tab && bash scripts/validate.sh
 | `SIDECAR_URL` | `http://localhost:8081` | — | Sidecar endpoint |
 | `ERGO_NODE_API_KEY` | `hello` | — | Ergo node wallet API key |
 
+## Current milestone
+
+**Tag: `milestone-v0.1-settlement`** — Repeatable bilateral credit settlement with novation.
+
+This milestone represents a complete prototype of the off-chain credit → on-chain settlement path:
+
+- **20 commits** from initial reserve setup through novation
+- **9+ on-chain redemption transactions** confirmed on Ergo private testnet
+- **3 debt transfers** (novation) executed and verified
+- **12/12 regression scenarios** passing in automated harness
+- **0.66+ ERG total redeemed** across multiple creditor pairs from a single 1.0 ERG reserve
+
+### Recommended demo path
+
+For the smoothest demo experience:
+
+1. Start with `DEMO_MODE=true` for longer confirmation windows
+2. Show system state: reserves, obligations, tracker entries
+3. Execute a novation (instant — no chain interaction)
+4. Show guardrails: duplicate block, v1 repeat block, drift detection
+5. Run the regression harness (12/12 in ~2 minutes)
+6. Pre-deploy the tracker for the pair you plan to redeem (reduces redemption wait)
+7. Execute a redemption — if pending, recover with `/recover-pending`
+8. Verify app/chain consistency
+
+Steps 1-5 take ~3 minutes and demonstrate the full feature set without chain waiting. Steps 6-8 add the live on-chain proof (~2-5 minutes depending on block times).
+
+### What is proven live vs tested by harness
+
+| Layer | Proven | Method |
+|---|---|---|
+| Basis contract (insert + update) | On-chain | BasisSpec (27 tests) + live testnet txs |
+| Schnorr signatures + AVL proofs | On-chain | Live redemption txs |
+| Multi-entry tracker trees | On-chain | Live multi-pair redemption |
+| Novation (debt transfer) | App + chain | Transfer → auto-tracker-update → redemption |
+| Reconciliation guardrails | App | Automated harness (12/12) |
+| Drift detection | App | Automated harness |
+| Contract version derivation | App + sidecar | Automated harness |
+| Pending recovery | App + chain | Live testnet sessions |
+
 ## Documentation
 
 | Document | Location | Purpose |

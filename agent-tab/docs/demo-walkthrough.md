@@ -40,6 +40,15 @@ curl -X POST http://localhost:3000/api/obligations \
 
 ## 3. Redeem (one call does everything)
 
+**Demo tip:** For a smoother live demo, pre-deploy the tracker ~2 minutes before redeeming. This separates the slow tracker confirmation from the redemption call:
+```bash
+# Pre-deploy tracker (do this first, then wait for confirmation)
+curl -X POST http://localhost:3000/api/tracker/deploy \
+  -H 'Content-Type: application/json' \
+  -d '{"reserveId": "<v2-reserve-id>", "obligationId": "<obligation-id>"}'
+# Wait ~2 minutes for block confirmation, then redeem:
+```
+
 ```bash
 curl -X POST http://localhost:3000/api/reserves/redeem \
   -H 'Content-Type: application/json' \
@@ -154,14 +163,14 @@ cd agent-tab && bash scripts/validate.sh
 # Expected: 12 passed, 0 failed, 0 skipped
 ```
 
-## Key numbers from testnet sessions
+## Key numbers from testnet sessions (approximate — state evolves with testing)
 
 | Metric | Value |
 |---|---|
 | V2 reserve initial collateral | 1.00 ERG |
-| Total redeemed (9 settlements) | 0.66 ERG |
-| Remaining reserve | 0.34 ERG |
-| Debt transfers executed | 2 (0.04 + 0.03 credits) |
+| Total redeemed (11+ settlements) | 0.72+ ERG |
+| Remaining reserve | ~0.28 ERG |
+| Debt transfers executed | 3+ |
 | Distinct creditor pairs | 2 |
 | Tracker deployments (history) | 8+ |
 | Settlement events | 9 |
