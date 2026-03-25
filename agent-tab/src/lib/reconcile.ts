@@ -6,6 +6,13 @@ import * as os from "os";
 
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
 const NANO_PER_CREDIT = 1_000_000_000;
+
+// Confirmation polling config — set DEMO_MODE=true for longer windows
+const DEMO_MODE = process.env.DEMO_MODE === "true";
+export const TRACKER_POLL_INTERVAL_MS = DEMO_MODE ? 15000 : 10000;
+export const TRACKER_POLL_ATTEMPTS = DEMO_MODE ? 24 : 12; // 6 min demo / 2 min normal
+export const REDEEM_POLL_INTERVAL_MS = DEMO_MODE ? 10000 : 5000;
+export const REDEEM_POLL_ATTEMPTS = DEMO_MODE ? 18 : 6; // 3 min demo / 30s normal
 const SECRETS_DIR = path.join(os.homedir(), ".chaincash-secrets");
 
 /**
@@ -517,8 +524,8 @@ export async function deployAndRecordTracker(params: {
   // Wait for on-chain confirmation (tracker must be confirmed before redemption tx can reference it)
   const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   let confirmed = false;
-  for (let i = 0; i < 12; i++) {
-    await new Promise(r => setTimeout(r, 10000));
+  for (let i = 0; i < TRACKER_POLL_ATTEMPTS; i++) {
+    await new Promise(r => setTimeout(r, TRACKER_POLL_INTERVAL_MS));
     try {
       const checkRes = await fetch(`${nodeUrl}/blockchain/box/byId/${result.trackerBoxId}`);
       const checkData = await checkRes.json();

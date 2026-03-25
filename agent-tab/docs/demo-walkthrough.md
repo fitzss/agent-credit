@@ -5,6 +5,13 @@ Assumes: Ergo node on :9052, sidecar on :8081, Agent Tab on :3000.
 
 ## Prerequisites
 
+Start Agent Tab in **demo mode** for longer confirmation windows:
+```bash
+cd agent-tab && DEMO_MODE=true npx next dev -p 3000
+```
+
+Demo mode increases polling: 3 minutes for redemption confirmation (vs 30s normal), 6 minutes for tracker deployment (vs 2min normal). This avoids `phase: "pending"` interruptions during a live demo.
+
 Verify services are running:
 ```bash
 curl -s http://localhost:8081/health | jq .status    # "ok"

@@ -85,15 +85,14 @@ echo ""
 
 # === Scenario 9: R5 digest drift detection ===
 echo "Scenario 9: R5 digest drift detection"
-# Tamper the v2 reserve's digest
+# Tamper the v2 reserve's digest AND give obligation debt in one script
 npx tsx -e "
 import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.reserve.update({where:{id:'ea11a006-0516-49c3-aab9-861965dd253e'},data:{avlTreeDigest:'aaaaaaaaaaaa03032000'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
-# Give an obligation some debt for the test
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0.01,settlementStatus:'current'}}).then(()=>p.\$disconnect())
+async function main(){
+  await p.reserve.update({where:{id:'ea11a006-0516-49c3-aab9-861965dd253e'},data:{avlTreeDigest:'aaaaaaaaaaaa03032000'}});
+  await p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0.01,settlementStatus:'current'}});
+}
+main().then(()=>p.\$disconnect())
 " 2>/dev/null
 sleep 1
 RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \

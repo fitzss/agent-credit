@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned, ensureSecretFile } from "@/lib/reconcile";
+import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned, ensureSecretFile, REDEEM_POLL_INTERVAL_MS, REDEEM_POLL_ATTEMPTS } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -186,8 +186,8 @@ export async function POST(req: NextRequest) {
 
   // --- Step 5: Poll for confirmation ---
   let confirmed = false;
-  for (let i = 0; i < 6; i++) {
-    await new Promise(r => setTimeout(r, 5000));
+  for (let i = 0; i < REDEEM_POLL_ATTEMPTS; i++) {
+    await new Promise(r => setTimeout(r, REDEEM_POLL_INTERVAL_MS));
     try {
       const checkRes = await fetch(`${nodeUrl}/blockchain/transaction/byId/${txId}`);
       const checkData = await checkRes.json();

@@ -3,6 +3,8 @@
 Scriptable verification for the V2 repeatable settlement path.
 All commands assume: node on :9052, sidecar on :8081, Agent Tab on :3000.
 
+**Tip:** For chain-dependent tests (steps 3-5), start Agent Tab with `DEMO_MODE=true` for longer confirmation polling windows. This reduces the chance of hitting `phase: "pending"` mid-test.
+
 ## 1. Service health
 
 ```bash

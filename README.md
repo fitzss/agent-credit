@@ -79,12 +79,23 @@ Agents create off-chain credit obligations (IOU notes), back them with on-chain 
 # Start sidecar
 cd chaincash && sbt "runMain chaincash.sidecar.SidecarServer"
 
-# Start Agent Tab
+# Start Agent Tab (normal mode: 30s redemption poll, 2min tracker poll)
 cd agent-tab && npm install && npx next dev -p 3000
+
+# Start Agent Tab (demo mode: 3min redemption poll, 6min tracker poll)
+cd agent-tab && DEMO_MODE=true npx next dev -p 3000
 
 # Run validation harness
 cd agent-tab && bash scripts/validate.sh
 ```
+
+### Environment variables
+
+| Variable | Default | Demo mode | Purpose |
+|---|---|---|---|
+| `DEMO_MODE` | `false` | `true` | Enables longer confirmation polling windows |
+| `SIDECAR_URL` | `http://localhost:8081` | — | Sidecar endpoint |
+| `ERGO_NODE_API_KEY` | `hello` | — | Ergo node wallet API key |
 
 ## Documentation
 
