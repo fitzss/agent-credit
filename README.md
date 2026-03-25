@@ -141,9 +141,12 @@ Steps 1-5 take ~3 minutes and demonstrate the full feature set without chain wai
 
 | Document | Location | Purpose |
 |---|---|---|
+| **Reviewer Brief** | `agent-tab/docs/reviewer-brief.md` | Concise overview for external reviewers |
+| **Demo Checklist** | `agent-tab/docs/demo-checklist.md` | Pre-flight + execution checklist |
+| **Demo Narration** | `agent-tab/docs/demo-narration.md` | Talk track with 7 beats (~6-8 min) |
+| **Demo Walkthrough** | `agent-tab/docs/demo-walkthrough.md` | Detailed step-by-step commands |
 | **V2 Runbook** | `agent-tab/docs/v2-runbook.md` | Operator guide for the repeatable settlement path |
 | **Architecture Notes** | `agent-tab/docs/architecture-notes.md` | Semantics, invariants, chain vs app truth |
-| **Demo Walkthrough** | `agent-tab/docs/demo-walkthrough.md` | Step-by-step demo script |
 | **Smoke Test** | `agent-tab/docs/smoke-test.md` | 7-step scriptable verification |
 | **Validation Matrix** | `agent-tab/docs/validation-matrix.md` | 13 regression scenarios |
 | **Validation Harness** | `agent-tab/scripts/validate.sh` | Executable: 12 automated checks |
