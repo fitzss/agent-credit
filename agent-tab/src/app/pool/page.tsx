@@ -4,10 +4,10 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 
 /**
- * Phase 1a: Pool Dashboard — operator settlement surface.
+ * Pool Dashboard (Phase 1a+b) — operator settlement + authority surface.
  *
- * Shows backing pool health, all obligations with settlement-readiness
- * badges, and one-click redeem. Policy / authority model deferred to Phase 1b.
+ * Phase 1a: pool health, obligation readiness, one-click redeem.
+ * Phase 1b: delegation authority visibility, compliance state, spend caps.
  */
 
 interface Reserve {
@@ -47,10 +47,42 @@ interface PoolHealth {
   poolStatus: string;
 }
 
+interface AuthorityDelegation {
+  id: string;
+  customerId: string;
+  customerName: string;
+  sessionPubKey: string;
+  scopeProviders: string;
+  scopeTools: string;
+  spendCap: number;
+  spentSoFar: number;
+  utilization: number;
+  expiresAt: string;
+  timeRemainingMs: number;
+  status: string;
+  complianceState: string;
+}
+
+interface AuthoritySummary {
+  authorityMode: string;
+  activeDelegations: number;
+  approachingCap: number;
+  approachingExpiry: number;
+  exhausted: number;
+  expired: number;
+  revoked: number;
+}
+
+interface Authority {
+  delegations: AuthorityDelegation[];
+  summary: AuthoritySummary;
+}
+
 interface PoolSummary {
   reserves: Reserve[];
   obligations: Obligation[];
   poolHealth: PoolHealth;
+  authority: Authority;
 }
 
 export default function PoolDashboard() {
@@ -352,10 +384,133 @@ export default function PoolDashboard() {
         </div>
       </div>
 
+      {/* Agent Authority */}
+      <div>
+        <div className="flex items-center gap-3 mb-3">
+          <h2 className="text-xl font-semibold">Agent Authority</h2>
+          <AuthorityModeBadge mode={pool.authority.summary.authorityMode} />
+        </div>
+
+        {pool.authority.summary.authorityMode === "tracker-managed" ? (
+          <div className="border border-zinc-800 rounded-lg px-5 py-6 text-center">
+            <p className="text-zinc-400 text-sm">
+              No delegated authority grants for this pool — obligations are
+              tracker-managed.
+            </p>
+            <p className="text-zinc-600 text-xs mt-2">
+              The pool operator holds signing authority directly. Agent
+              obligations are committed via the tracker without per-agent
+              delegation scopes or spend caps.
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* Summary line */}
+            <p className="text-sm text-zinc-400 mb-3">
+              {pool.authority.summary.activeDelegations} active delegation
+              {pool.authority.summary.activeDelegations !== 1 ? "s" : ""}
+              {pool.authority.summary.approachingCap > 0 && (
+                <span className="text-yellow-400">
+                  {" "}
+                  ({pool.authority.summary.approachingCap} approaching cap)
+                </span>
+              )}
+              {pool.authority.summary.approachingExpiry > 0 && (
+                <span className="text-yellow-400">
+                  {" "}
+                  ({pool.authority.summary.approachingExpiry} approaching
+                  expiry)
+                </span>
+              )}
+            </p>
+
+            {/* Delegations table */}
+            <div className="border border-zinc-800 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-left text-zinc-500">
+                    <th className="px-4 py-3 font-medium">Customer</th>
+                    <th className="px-4 py-3 font-medium">Session Key</th>
+                    <th className="px-4 py-3 font-medium">Scope</th>
+                    <th className="px-4 py-3 font-medium">Spend Cap</th>
+                    <th className="px-4 py-3 font-medium">Spent</th>
+                    <th className="px-4 py-3 font-medium">Utilization</th>
+                    <th className="px-4 py-3 font-medium">Expires</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pool.authority.delegations.map((d) => (
+                    <tr
+                      key={d.id}
+                      className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
+                    >
+                      <td className="px-4 py-3">
+                        <Link
+                          href={`/customer/${d.customerId}`}
+                          className="text-blue-400 hover:underline"
+                        >
+                          {d.customerName}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-zinc-400">
+                        {d.sessionPubKey.substring(0, 16)}...
+                      </td>
+                      <td className="px-4 py-3 text-zinc-300">
+                        <span className="block">{d.scopeProviders}</span>
+                        {d.scopeTools !== "All tools" && (
+                          <span className="block text-xs text-zinc-500">
+                            {d.scopeTools}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono">
+                        ${d.spendCap.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 font-mono">
+                        ${d.spentSoFar.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                d.utilization >= 0.9
+                                  ? "bg-red-500"
+                                  : d.utilization >= 0.7
+                                    ? "bg-yellow-500"
+                                    : "bg-green-500"
+                              }`}
+                              style={{
+                                width: `${Math.min(d.utilization * 100, 100)}%`,
+                              }}
+                            />
+                          </div>
+                          <span className="text-xs text-zinc-500">
+                            {Math.round(d.utilization * 100)}%
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-zinc-400">
+                        <TimeRemaining ms={d.timeRemainingMs} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <ComplianceBadge state={d.complianceState} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
       {/* Phase note */}
       <p className="text-xs text-zinc-600 border-t border-zinc-800/50 pt-4">
-        Phase 1a: Pool / settlement operator surface. Tracker state, settlement
-        history, and policy controls are planned for subsequent phases.
+        Phase 1a+b: Pool settlement + authority visibility. Tracker state,
+        settlement history, and delegation management are planned for subsequent
+        phases.
       </p>
     </div>
   );
@@ -445,4 +600,61 @@ function VersionBadge({ version }: { version: string }) {
       {version}
     </span>
   );
+}
+
+function AuthorityModeBadge({ mode }: { mode: string }) {
+  if (mode === "delegated") {
+    return (
+      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-blue-900/50 text-blue-400">
+        Delegated Authority
+      </span>
+    );
+  }
+  return (
+    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-zinc-800 text-zinc-400">
+      Tracker-Managed
+    </span>
+  );
+}
+
+function ComplianceBadge({ state }: { state: string }) {
+  const styles: Record<string, string> = {
+    active: "bg-green-900/50 text-green-400",
+    "approaching-cap": "bg-yellow-900/50 text-yellow-400",
+    "approaching-expiry": "bg-yellow-900/50 text-yellow-400",
+    exhausted: "bg-red-900/50 text-red-400",
+    expired: "bg-red-900/50 text-red-400",
+    revoked: "bg-zinc-800 text-zinc-400",
+  };
+  const labels: Record<string, string> = {
+    active: "Active",
+    "approaching-cap": "Approaching Cap",
+    "approaching-expiry": "Approaching Expiry",
+    exhausted: "Exhausted",
+    expired: "Expired",
+    revoked: "Revoked",
+  };
+  return (
+    <span
+      className={`inline-block px-2 py-0.5 text-xs rounded-full ${styles[state] || styles.revoked}`}
+    >
+      {labels[state] || state}
+    </span>
+  );
+}
+
+function TimeRemaining({ ms }: { ms: number }) {
+  if (ms <= 0) return <span className="text-red-400">Expired</span>;
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  if (days > 0) {
+    return <span>{days}d {remainingHours}h</span>;
+  }
+  if (hours > 0) {
+    const mins = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+    return <span>{hours}h {mins}m</span>;
+  }
+  const mins = Math.floor(ms / (1000 * 60));
+  return <span className="text-yellow-400">{mins}m</span>;
 }
