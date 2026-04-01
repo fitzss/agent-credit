@@ -26,6 +26,9 @@ export default function RootLayout({
               <Link href="/" className="hover:text-white transition-colors">
                 Overview
               </Link>
+              <Link href="/pool" className="hover:text-white transition-colors">
+                Pool
+              </Link>
               <Link href="/verify" className="hover:text-white transition-colors">
                 Verify
               </Link>

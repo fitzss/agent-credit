@@ -185,6 +185,7 @@ export async function POST(req: NextRequest) {
   const netPayoutNanoErg = redeemResult.payoutNanoErg || 0;
 
   // --- Step 5: Poll for confirmation ---
+  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   let confirmed = false;
   for (let i = 0; i < REDEEM_POLL_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, REDEEM_POLL_INTERVAL_MS));

@@ -214,7 +214,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
         boxId: reserveOutput.boxId,
         valueNanoErg: newReserveValue,
         avlTreeDigest: chainState.avlTreeDigest,
-        lifecycle: newReserveValue > 0n ? "active" : "depleted",
+        lifecycle: newReserveValue > BigInt(0) ? "active" : "depleted",
       },
     }),
     prisma.settlementEvent.create({
@@ -236,7 +236,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
   ]);
 
   const after = {
-    reserve: { boxId: reserveOutput.boxId, valueNanoErg: newReserveValue.toString(), lifecycle: newReserveValue > 0n ? "active" : "depleted" },
+    reserve: { boxId: reserveOutput.boxId, valueNanoErg: newReserveValue.toString(), lifecycle: newReserveValue > BigInt(0) ? "active" : "depleted" },
     obligation: { currentAmount: newObligationAmount, settlementStatus: isFullySettled ? "settled" : "partial" },
   };
 
