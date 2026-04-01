@@ -34,9 +34,13 @@ echo "Discovering fixture IDs from database..."
 FIXTURE=$(npx tsx -e "
 import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
 async function main(){
-  // Find v2 reserve that actually has value on-chain (most recently updated)
+  // Find v2 reserve with real on-chain history (prefer one with settlements)
   const v2s = await p.reserve.findMany({where:{contractVersion:'v2',lifecycle:'active',valueNanoErg:{gt:0}},orderBy:{updatedAt:'desc'}});
-  const v2 = v2s[0];
+  let v2 = v2s[0];
+  for(const r of v2s){
+    const sc = await p.settlementEvent.count({where:{obligationState:{customerId:r.customerId},method:'on-chain-redemption'}});
+    if(sc > 0){ v2 = r; break; }
+  }
   // Find v1 reserve that has prior settlements (for repeat-block test)
   const v1s = await p.reserve.findMany({where:{contractVersion:'v1'}});
   let v1 = null;
