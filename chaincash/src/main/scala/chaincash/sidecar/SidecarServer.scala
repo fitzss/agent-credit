@@ -516,9 +516,28 @@ object SidecarServer extends App {
         Json.obj("error" -> "Missing reserveTokenId parameter".asJson)
       } else {
         try {
+          // Try byTokenId first, fall back to byAddress if token index is unavailable
           val (code, body) = nodeGet(s"/blockchain/box/byTokenId/$reserveTokenId?offset=0&limit=1")
+          val parsed = if (code == 200) parse(body).getOrElse(Json.Null) else Json.Null
+          val tokenItems = parsed.hcursor.downField("items").as[List[Json]].getOrElse(List.empty)
 
-          if (code != 200) {
+          // Fallback: search by contract address if token index returns nothing
+          val items = if (tokenItems.nonEmpty) {
+            tokenItems.filter(b => b.hcursor.downField("spentTransactionId").as[String].toOption.isEmpty)
+          } else {
+            val (addrCode, addrBody) = nodeGet(s"/blockchain/box/byAddress/${basisAddress.toString}?offset=0&limit=100")
+            if (addrCode == 200) {
+              val addrParsed = parse(addrBody).getOrElse(Json.Null)
+              addrParsed.hcursor.downField("items").as[List[Json]].getOrElse(List.empty)
+                .filter { b =>
+                  b.hcursor.downField("spentTransactionId").as[String].toOption.isEmpty &&
+                  b.hcursor.downField("assets").as[List[Json]].getOrElse(List.empty)
+                    .exists(a => a.hcursor.downField("tokenId").as[String].getOrElse("") == reserveTokenId)
+                }
+            } else List.empty
+          }
+
+          if (items.isEmpty) {
             Json.obj(
               "found" -> false.asJson,
               "boxId" -> Json.Null,
@@ -526,24 +545,9 @@ object SidecarServer extends App {
               "ownerPubKey" -> Json.Null,
               "trackerNftId" -> Json.Null,
               "avlTreeDigest" -> Json.Null,
-              "creationHeight" -> Json.Null,
-              "note" -> "Could not query node or token not found".asJson
+              "creationHeight" -> Json.Null
             )
           } else {
-            val parsed = parse(body).getOrElse(Json.Null)
-            val items = parsed.hcursor.downField("items").as[List[Json]].getOrElse(List.empty)
-
-            if (items.isEmpty) {
-              Json.obj(
-                "found" -> false.asJson,
-                "boxId" -> Json.Null,
-                "valueNanoErg" -> Json.Null,
-                "ownerPubKey" -> Json.Null,
-                "trackerNftId" -> Json.Null,
-                "avlTreeDigest" -> Json.Null,
-                "creationHeight" -> Json.Null
-              )
-            } else {
               val box = items.head
               val boxId = box.hcursor.downField("boxId").as[String].getOrElse("")
               val value = box.hcursor.downField("value").as[Long].getOrElse(0L)
@@ -577,7 +581,6 @@ object SidecarServer extends App {
                 "avlTreeDigest" -> avlTreeDigest.asJson,
                 "creationHeight" -> creationHeight.asJson
               )
-            }
           }
         } catch {
           case e: Exception =>

@@ -2,15 +2,15 @@
 # Validation harness for Agent Tab + ChainCash settlement system
 # Exercises the scenario matrix from docs/validation-matrix.md
 #
+# Uses DYNAMIC IDs from the live database — works on any testnet instance.
+#
 # Prerequisites: node :9052, sidecar :8081, agent-tab :3000
 # Usage: cd agent-tab && bash scripts/validate.sh
 
 set -uo pipefail
-# Note: not using -e so individual test failures don't abort the harness
 
 AGENT="http://localhost:3000"
 SIDECAR="http://localhost:8081"
-NODE="http://localhost:9052"
 
 PASS=0
 FAIL=0
@@ -20,17 +20,6 @@ pass() { echo "  ✓ PASS: $1"; ((PASS++)); }
 fail() { echo "  ✗ FAIL: $1"; ((FAIL++)); }
 skip() { echo "  ○ SKIP: $1"; ((SKIP++)); }
 
-check_json() {
-  local resp="$1" field="$2" expected="$3" label="$4"
-  local actual
-  actual=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d$(echo $field))" 2>/dev/null || echo "PARSE_ERROR")
-  if [ "$actual" = "$expected" ]; then
-    pass "$label"
-  else
-    fail "$label (expected=$expected, got=$actual)"
-  fi
-}
-
 check_contains() {
   local resp="$1" substring="$2" label="$3"
   if echo "$resp" | grep -q "$substring"; then
@@ -39,6 +28,50 @@ check_contains() {
     fail "$label (missing: $substring)"
   fi
 }
+
+# --- Discover IDs dynamically ---
+echo "Discovering fixture IDs from database..."
+FIXTURE=$(npx tsx -e "
+import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+async function main(){
+  // Find v2 reserve that actually has value on-chain (most recently updated)
+  const v2s = await p.reserve.findMany({where:{contractVersion:'v2',lifecycle:'active',valueNanoErg:{gt:0}},orderBy:{updatedAt:'desc'}});
+  const v2 = v2s[0];
+  // Find v1 reserve that has prior settlements (for repeat-block test)
+  const v1s = await p.reserve.findMany({where:{contractVersion:'v1'}});
+  let v1 = null;
+  for(const r of v1s){
+    const s = await p.settlementEvent.count({where:{obligationState:{customerId:r.customerId},method:'on-chain-redemption'}});
+    if(s > 0){ v1 = r; break; }
+  }
+  if(!v1) v1 = v1s[0]; // fallback
+  const obs = v2 ? await p.obligationState.findMany({where:{customerId:v2.customerId}}) : [];
+  const ob1 = obs[0]; const ob2 = obs[1];
+  const other = v1 ? await p.obligationState.findFirst({where:{customerId:v1.customerId}}) : null;
+  const settlement = await p.settlementEvent.findFirst({where:{redemptionTxId:{not:null}},orderBy:{timestamp:'desc'}});
+  console.log(JSON.stringify({
+    v2ReserveId: v2?.id||'', v1ReserveId: v1?.id||'',
+    ob1Id: ob1?.id||'', ob2Id: ob2?.id||'',
+    otherId: other?.id||'',
+    settledTxId: settlement?.redemptionTxId||'',
+    ownerPkPrefix: v2?.debtorPubKey?.substring(0,8)||'',
+  }));
+}
+main().finally(()=>p.\$disconnect());
+" 2>/dev/null)
+
+V2_RESERVE=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['v2ReserveId'])" 2>/dev/null)
+V1_RESERVE=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['v1ReserveId'])" 2>/dev/null)
+OB1=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['ob1Id'])" 2>/dev/null)
+OB2=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['ob2Id'])" 2>/dev/null)
+OTHER_OB=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['otherId'])" 2>/dev/null)
+SETTLED_TX=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['settledTxId'])" 2>/dev/null)
+OWNER_PK_PREFIX=$(echo "$FIXTURE" | python3 -c "import sys,json; print(json.load(sys.stdin)['ownerPkPrefix'])" 2>/dev/null)
+
+echo "  V2 reserve: ${V2_RESERVE:0:8}..."
+echo "  V1 reserve: ${V1_RESERVE:0:8}..."
+echo "  Obligations: ${OB1:0:8}..., ${OB2:0:8}..."
+echo ""
 
 echo "=========================================="
 echo "  Agent Tab Validation Harness"
@@ -52,151 +85,171 @@ check_contains "$HEALTH" '"ok"' "Sidecar health"
 
 RESERVES=$(curl -s "$AGENT/api/reserves" 2>/dev/null || echo '[]')
 check_contains "$RESERVES" '"id"' "Agent Tab API responding"
-
 echo ""
 
 # === Scenario 6: Duplicate reconciliation prevention ===
 echo "Scenario 6: Duplicate reconciliation prevention"
-# Use an already-reconciled txId
-RESP=$(curl -s -X POST "$AGENT/api/reserves/reconcile-redemption" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e","obligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","redemptionTxId":"307a8e965086315c16ed33267352e551f0bf5699d7cd843f976bc6d987de62cf","grossRedeemNanoErg":200000000}' 2>/dev/null || echo '{}')
-check_contains "$RESP" "already reconciled" "Duplicate blocked"
+if [ -n "$SETTLED_TX" ] && [ "$SETTLED_TX" != "null" ]; then
+  RESP=$(curl -s -X POST "$AGENT/api/reserves/reconcile-redemption" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\",\"redemptionTxId\":\"$SETTLED_TX\",\"grossRedeemNanoErg\":100000000}" 2>/dev/null || echo '{}')
+  check_contains "$RESP" "already reconciled" "Duplicate blocked"
+else
+  skip "No settled tx found for duplicate test"
+fi
 echo ""
 
 # === Scenario 7: V1 reserve repeat block ===
 echo "Scenario 7: V1 reserve repeat block"
-# Temporarily give the old v1 obligation some debt
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'f5ddc90d-bcde-4530-8c04-2cae21c5301e'},data:{currentAmount:0.01,settlementStatus:'current'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
-sleep 1
-RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"bf486d82-77ae-40ab-85b8-f201989c9fee","obligationId":"f5ddc90d-bcde-4530-8c04-2cae21c5301e"}' 2>/dev/null || echo '{}')
-check_contains "$RESP" "v1" "V1 repeat blocked"
-# Restore
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'f5ddc90d-bcde-4530-8c04-2cae21c5301e'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
+if [ -n "$V1_RESERVE" ] && [ "$V1_RESERVE" != "" ] && [ -n "$OTHER_OB" ] && [ "$OTHER_OB" != "" ]; then
+  # Temporarily give the v1 obligation some debt
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  p.obligationState.update({where:{id:'$OTHER_OB'},data:{currentAmount:0.01,settlementStatus:'current'}}).then(()=>p.\$disconnect())
+  " 2>/dev/null
+  sleep 2
+  RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V1_RESERVE\",\"obligationId\":\"$OTHER_OB\"}" 2>/dev/null || echo '{}')
+  check_contains "$RESP" "v1" "V1 repeat blocked"
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  p.obligationState.update({where:{id:'$OTHER_OB'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
+  " 2>/dev/null
+else
+  skip "No v1 reserve + obligation pair found"
+fi
 echo ""
 
 # === Scenario 9: R5 digest drift detection ===
 echo "Scenario 9: R5 digest drift detection"
-# Tamper the v2 reserve's digest AND give obligation debt in one script
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-async function main(){
-  await p.reserve.update({where:{id:'ea11a006-0516-49c3-aab9-861965dd253e'},data:{avlTreeDigest:'aaaaaaaaaaaa03032000'}});
-  await p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0.01,settlementStatus:'current'}});
-}
-main().then(()=>p.\$disconnect())
-" 2>/dev/null
-sleep 3
-RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e","obligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44"}' 2>/dev/null || echo '{}')
-check_contains "$RESP" "drift" "Drift detected"
-# Restore digest via refresh
-curl -s -X PATCH "$AGENT/api/reserves" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e"}' > /dev/null 2>&1
-# Restore obligation
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
+if [ -n "$V2_RESERVE" ] && [ -n "$OB1" ]; then
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  async function main(){
+    await p.reserve.update({where:{id:'$V2_RESERVE'},data:{avlTreeDigest:'aaaaaaaaaaaa03032000'}});
+    await p.obligationState.update({where:{id:'$OB1'},data:{currentAmount:0.01,settlementStatus:'current'}});
+  }
+  main().then(()=>p.\$disconnect())
+  " 2>/dev/null
+  sleep 3
+  RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\"}" 2>/dev/null || echo '{}')
+  check_contains "$RESP" "drift" "Drift detected"
+  # Restore via refresh
+  curl -s -X PATCH "$AGENT/api/reserves" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
+  # Recover any pending
+  curl -s -X POST "$AGENT/api/reserves/recover-pending" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  p.obligationState.update({where:{id:'$OB1'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
+  " 2>/dev/null
+else
+  skip "No v2 reserve + obligation found"
+fi
 echo ""
 
 # === Scenario 11: Secret file auto-provisioning ===
 echo "Scenario 11: Secret file auto-provisioning"
 SECRET_DIR="$HOME/.chaincash-secrets"
-# Delete a secret file and verify it gets recreated
-OWNER_FILE="$SECRET_DIR/owner-024401eb.json"
-if [ -f "$OWNER_FILE" ]; then
+OWNER_FILE="$SECRET_DIR/owner-${OWNER_PK_PREFIX}.json"
+if [ -n "$OWNER_PK_PREFIX" ] && [ -f "$OWNER_FILE" ]; then
   cp "$OWNER_FILE" /tmp/owner-backup-validation.json
   rm "$OWNER_FILE"
-fi
-# Give obligation debt to trigger the redeem path (which provisions secrets)
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0.01,settlementStatus:'current'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
-sleep 1
-# Call redeem — it will provision the secret file before anything else
-RESP=$(curl -s --max-time 30 -X POST "$AGENT/api/reserves/redeem" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e","obligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44"}' 2>/dev/null || echo '{}')
-# Check if file was created (regardless of redeem outcome)
-if [ -f "$OWNER_FILE" ]; then
-  PERMS=$(stat -c '%a' "$OWNER_FILE" 2>/dev/null || stat -f '%Lp' "$OWNER_FILE" 2>/dev/null)
-  if [ "$PERMS" = "600" ]; then
-    pass "Secret file auto-created with mode 600"
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  p.obligationState.update({where:{id:'$OB1'},data:{currentAmount:0.01,settlementStatus:'current'}}).then(()=>p.\$disconnect())
+  " 2>/dev/null
+  sleep 1
+  curl -s --max-time 30 -X POST "$AGENT/api/reserves/redeem" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\"}" > /dev/null 2>&1
+  if [ -f "$OWNER_FILE" ]; then
+    PERMS=$(stat -c '%a' "$OWNER_FILE" 2>/dev/null || stat -f '%Lp' "$OWNER_FILE" 2>/dev/null)
+    if [ "$PERMS" = "600" ]; then
+      pass "Secret file auto-created with mode 600"
+    else
+      pass "Secret file auto-created (mode=$PERMS)"
+    fi
   else
-    pass "Secret file auto-created (mode=$PERMS)"
+    fail "Secret file not auto-created"
   fi
+  # Recover any pending + restore
+  curl -s -X POST "$AGENT/api/reserves/recover-pending" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
+  npx tsx -e "
+  import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
+  p.obligationState.update({where:{id:'$OB1'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
+  " 2>/dev/null
 else
-  fail "Secret file not auto-created"
+  skip "Owner secret file not found for prefix $OWNER_PK_PREFIX"
 fi
-# Restore
-npx tsx -e "
-import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
-p.obligationState.update({where:{id:'3fcaeaf5-f12c-4784-b55b-f104314a6b44'},data:{currentAmount:0,settlementStatus:'settled'}}).then(()=>p.\$disconnect())
-" 2>/dev/null
 echo ""
 
 # === Scenario 12: Transfer guardrails ===
 echo "Scenario 12: Transfer guardrails"
 
-# Different debtor
-RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
-  -H 'Content-Type: application/json' \
-  -d '{"fromObligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","toObligationId":"f5ddc90d-bcde-4530-8c04-2cae21c5301e","amountCredits":0.01}' 2>/dev/null || echo '{}')
-check_contains "$RESP" "same debtor" "Transfer: different debtor blocked"
+# Different debtor (use OB1 from v2 customer + OTHER_OB from v1 customer)
+if [ -n "$OB1" ] && [ -n "$OTHER_OB" ] && [ "$OTHER_OB" != "" ] && [ "$OTHER_OB" != "null" ]; then
+  RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
+    -H 'Content-Type: application/json' \
+    -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OTHER_OB\",\"amountCredits\":0.01}" 2>/dev/null || echo '{}')
+  check_contains "$RESP" "same debtor" "Transfer: different debtor blocked"
+else
+  skip "No cross-debtor obligation pair"
+fi
 
 # Self transfer
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
-  -d '{"fromObligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","toObligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","amountCredits":0.01}' 2>/dev/null || echo '{}')
+  -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB1\",\"amountCredits\":0.01}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "same obligation" "Transfer: self blocked"
 
 # Negative amount
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
-  -d '{"fromObligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","toObligationId":"87fcaece-96d8-45a2-a507-ab205a219135","amountCredits":-0.01}' 2>/dev/null || echo '{}')
+  -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB2\",\"amountCredits\":-0.01}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "positive" "Transfer: negative amount blocked"
 
 # Insufficient source
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
-  -d '{"fromObligationId":"3fcaeaf5-f12c-4784-b55b-f104314a6b44","toObligationId":"87fcaece-96d8-45a2-a507-ab205a219135","amountCredits":999}' 2>/dev/null || echo '{}')
+  -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB2\",\"amountCredits\":999}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "insufficient" "Transfer: insufficient source blocked"
 echo ""
 
 # === Scenario 13: Contract version derivation ===
 echo "Scenario 13: Contract version derivation"
-RESP=$(curl -s -X PATCH "$AGENT/api/reserves" \
-  -H 'Content-Type: application/json' \
-  -d '{"reserveId":"bf486d82-77ae-40ab-85b8-f201989c9fee"}' 2>/dev/null || echo '{}')
-check_contains "$RESP" '"v1"' "V1 reserve version correct"
+if [ -n "$V1_RESERVE" ] && [ "$V1_RESERVE" != "" ]; then
+  RESP=$(curl -s -X PATCH "$AGENT/api/reserves" \
+    -H 'Content-Type: application/json' \
+    -d "{\"reserveId\":\"$V1_RESERVE\"}" 2>/dev/null || echo '{}')
+  check_contains "$RESP" '"v1"' "V1 reserve version correct"
+else
+  skip "No v1 reserve"
+fi
 
 RESP=$(curl -s -X PATCH "$AGENT/api/reserves" \
   -H 'Content-Type: application/json' \
-  -d '{"reserveId":"ea11a006-0516-49c3-aab9-861965dd253e"}' 2>/dev/null || echo '{}')
+  -d "{\"reserveId\":\"$V2_RESERVE\"}" 2>/dev/null || echo '{}')
 check_contains "$RESP" '"v2"' "V2 reserve version correct"
 echo ""
 
 # === Chain-dependent scenarios (informational) ===
-echo "Chain-dependent scenarios (require live testnet + time):"
-echo "  Scenario 1 (one-shot): Verified in prior sessions"
-echo "  Scenario 2 (repeated same-pair): Verified in prior sessions"
-echo "  Scenario 3 (multi-pair preservation): Verified in prior sessions"
-echo "  Scenario 4 (novation + redeem both): Verified this session"
-echo "  Scenario 5 (pending recovery): Verified in prior sessions"
-echo "  Scenario 8 (stale tracker auto-redeploy): Verified in prior sessions"
-echo "  Scenario 10 (missing tracker auto-deploy): Verified in prior sessions"
+echo "Chain-dependent scenarios (verified in live testnet sessions):"
+echo "  Scenario 1 (one-shot redemption)"
+echo "  Scenario 2 (repeated same-pair)"
+echo "  Scenario 3 (multi-pair preservation)"
+echo "  Scenario 4 (novation + redeem both)"
+echo "  Scenario 5 (pending recovery)"
+echo "  Scenario 8 (stale tracker auto-redeploy)"
+echo "  Scenario 10 (missing tracker auto-deploy)"
 echo ""
 
 # === Summary ===
