@@ -2,6 +2,10 @@
 
 Use this plan for every external demo. Do not improvise the fixture.
 
+**Navigation note:** `/pool` auto-redirects to the pool detail view when one
+reserve is active. The detail page lives at `/pool/[reserveId]`. If the
+authority-demo fixture is also active, `/pool` shows a selector first.
+
 ## Canonical fixture IDs (do not change)
 
 | Item | ID |

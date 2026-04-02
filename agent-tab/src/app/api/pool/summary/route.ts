@@ -289,6 +289,61 @@ export async function GET(req: NextRequest) {
     revoked: delegationsWithCompliance.filter((d) => d.complianceState === "revoked").length,
   };
 
+  // --- Phase 1c: Tracker state + settlement history ---
+
+  // Current tracker boxes for each reserve's tracker NFT
+  const trackerNftIds = reserves.map((r) => r.trackerNftId).filter(Boolean);
+  const trackerBoxes = trackerNftIds.length > 0
+    ? await prisma.trackerBox.findMany({
+        where: { trackerNftId: { in: trackerNftIds }, isCurrent: true },
+        include: { entries: true },
+      })
+    : [];
+
+  const trackerData = trackerBoxes.map((tb) => ({
+    id: tb.id,
+    trackerNftId: tb.trackerNftId,
+    boxId: tb.boxId,
+    trackerPubKeyHex: tb.trackerPubKeyHex,
+    treeDigestHex: tb.treeDigestHex,
+    isCurrent: tb.isCurrent,
+    entries: tb.entries.map((e) => {
+      // Resolve creditor to provider name
+      const provName = providerNameMap.get(
+        obligations.find((o) => o.creditorPubKey === e.creditorPubKey)?.providerId || ""
+      );
+      return {
+        id: e.id,
+        debtorPubKey: e.debtorPubKey,
+        creditorPubKey: e.creditorPubKey,
+        totalDebtNanoErg: e.totalDebtNanoErg.toString(),
+        creditorName: provName || e.creditorPubKey.substring(0, 16) + "...",
+      };
+    }),
+  }));
+
+  // Recent settlement events for pool obligations (last 10)
+  const obligationIds = obligations.map((o) => o.id);
+  const recentSettlements = obligationIds.length > 0
+    ? await prisma.settlementEvent.findMany({
+        where: { obligationStateId: { in: obligationIds } },
+        include: { obligationState: { include: { provider: true } } },
+        orderBy: { timestamp: "desc" },
+        take: 10,
+      })
+    : [];
+
+  const settlementsData = recentSettlements.map((s) => ({
+    id: s.id,
+    obligationStateId: s.obligationStateId,
+    providerName: s.obligationState.provider.name,
+    amount: s.amount,
+    method: s.method,
+    status: s.status,
+    redemptionTxId: s.redemptionTxId,
+    timestamp: s.timestamp.toISOString(),
+  }));
+
   return NextResponse.json({
     reserves: reserves.map((r) => ({
       id: r.id,
@@ -312,5 +367,7 @@ export async function GET(req: NextRequest) {
       delegations: delegationsWithCompliance,
       summary: authoritySummary,
     },
+    tracker: trackerData,
+    settlements: settlementsData,
   });
 }

@@ -79,11 +79,42 @@ interface Authority {
   summary: AuthoritySummary;
 }
 
+interface TrackerEntry {
+  id: string;
+  debtorPubKey: string;
+  creditorPubKey: string;
+  totalDebtNanoErg: string;
+  creditorName: string;
+}
+
+interface TrackerBoxData {
+  id: string;
+  trackerNftId: string;
+  boxId: string;
+  trackerPubKeyHex: string;
+  treeDigestHex: string;
+  isCurrent: boolean;
+  entries: TrackerEntry[];
+}
+
+interface SettlementData {
+  id: string;
+  obligationStateId: string;
+  providerName: string;
+  amount: number;
+  method: string;
+  status: string;
+  redemptionTxId: string | null;
+  timestamp: string;
+}
+
 interface PoolSummary {
   reserves: Reserve[];
   obligations: Obligation[];
   poolHealth: PoolHealth;
   authority: Authority;
+  tracker: TrackerBoxData[];
+  settlements: SettlementData[];
 }
 
 export default function PoolDetail() {
@@ -476,11 +507,121 @@ export default function PoolDetail() {
         )}
       </div>
 
+      {/* Tracker State */}
+      <div>
+        <h2 className="text-xl font-semibold mb-3">Tracker State</h2>
+        {pool.tracker.length === 0 ? (
+          <div className="border border-zinc-800 rounded-lg px-5 py-6 text-center">
+            <p className="text-zinc-400 text-sm">No tracker deployed for this pool.</p>
+            <p className="text-zinc-600 text-xs mt-1">
+              A tracker is deployed automatically on first redemption.
+            </p>
+          </div>
+        ) : (
+          pool.tracker.map((tb) => (
+            <div key={tb.id} className="border border-zinc-800 rounded-lg p-5 space-y-4">
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                  <p className="text-zinc-500">Tracker NFT</p>
+                  <p className="font-mono text-zinc-400">{tb.trackerNftId.substring(0, 16)}...</p>
+                </div>
+                <div>
+                  <p className="text-zinc-500">Current Box</p>
+                  <p className="font-mono text-zinc-400">{tb.boxId.substring(0, 16)}...</p>
+                </div>
+                <div>
+                  <p className="text-zinc-500">Tree Digest</p>
+                  <p className="font-mono text-zinc-400">{tb.treeDigestHex.substring(0, 16)}...</p>
+                </div>
+              </div>
+
+              {tb.entries.length > 0 && (
+                <div className="border border-zinc-800/50 rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-left text-zinc-500">
+                        <th className="px-4 py-2 font-medium">Creditor</th>
+                        <th className="px-4 py-2 font-medium">Committed Debt</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tb.entries.map((e) => (
+                        <tr key={e.id} className="border-b border-zinc-800/30">
+                          <td className="px-4 py-2 text-zinc-300">{e.creditorName}</td>
+                          <td className="px-4 py-2 font-mono">
+                            {(Number(BigInt(e.totalDebtNanoErg)) / 1e9).toFixed(4)} ERG
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {tb.entries.length === 0 && (
+                <p className="text-zinc-600 text-sm">No entries in tracker tree.</p>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Recent Settlements */}
+      <div>
+        <h2 className="text-xl font-semibold mb-3">Recent Settlements</h2>
+        {pool.settlements.length === 0 ? (
+          <div className="border border-zinc-800 rounded-lg px-5 py-6 text-center">
+            <p className="text-zinc-400 text-sm">No settlements recorded for this pool.</p>
+          </div>
+        ) : (
+          <div className="border border-zinc-800 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-800 text-left text-zinc-500">
+                  <th className="px-4 py-3 font-medium">Provider</th>
+                  <th className="px-4 py-3 font-medium">Amount</th>
+                  <th className="px-4 py-3 font-medium">Method</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Tx</th>
+                  <th className="px-4 py-3 font-medium">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pool.settlements.map((s) => (
+                  <tr
+                    key={s.id}
+                    className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
+                  >
+                    <td className="px-4 py-3 text-zinc-300">{s.providerName}</td>
+                    <td className="px-4 py-3 font-mono">{s.amount.toFixed(2)}</td>
+                    <td className="px-4 py-3">
+                      <MethodBadge method={s.method} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-green-900/50 text-green-400">
+                        {s.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-zinc-400">
+                      {s.redemptionTxId
+                        ? s.redemptionTxId.substring(0, 12) + "..."
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-400">
+                      {new Date(s.timestamp).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* Phase note */}
       <p className="text-xs text-zinc-600 border-t border-zinc-800/50 pt-4">
-        Phase 1a+b: Pool settlement + authority visibility. Tracker state,
-        settlement history, and delegation management are planned for subsequent
-        phases.
+        Phase 1a-c: Pool settlement, authority, tracker state, and settlement
+        history. Delegation management is planned for subsequent phases.
       </p>
     </div>
   );
@@ -613,4 +754,19 @@ function TimeRemaining({ ms }: { ms: number }) {
   }
   const mins = Math.floor(ms / (1000 * 60));
   return <span className="text-yellow-400">{mins}m</span>;
+}
+
+function MethodBadge({ method }: { method: string }) {
+  if (method === "on-chain-redemption") {
+    return (
+      <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-blue-900/50 text-blue-400">
+        On-Chain
+      </span>
+    );
+  }
+  return (
+    <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-zinc-800 text-zinc-400">
+      {method}
+    </span>
+  );
 }
