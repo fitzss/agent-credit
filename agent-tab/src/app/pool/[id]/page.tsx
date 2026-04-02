@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { generateKeypair, signMessage } from "@/lib/crypto";
+import { buildDelegationMessage } from "@/lib/tracker/delegation";
 
 /**
  * Single pool detail view — scoped to one reserve.
@@ -20,7 +22,7 @@ interface Reserve {
   contractVersion: string;
   avlTreeDigest: string | null;
   updatedAt: string;
-  customer: { id: string; name: string; publicKey: string };
+  customer: { id: string; name: string; publicKey: string; signingMode: string };
 }
 
 interface Obligation {
@@ -128,6 +130,22 @@ export default function PoolDetail() {
     message: string;
   } | null>(null);
 
+  // Delegation controls
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createScope, setCreateScope] = useState("*");
+  const [createCap, setCreateCap] = useState("20");
+  const [createDuration, setCreateDuration] = useState("7d");
+  const [createKey, setCreateKey] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createResult, setCreateResult] = useState<{
+    success: boolean;
+    message: string;
+    sessionPubKey?: string;
+    sessionPrivateKey?: string;
+  } | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+
   const load = useCallback(() => {
     fetch(`/api/pool/summary?reserveId=${id}`)
       .then((r) => r.json())
@@ -190,10 +208,92 @@ export default function PoolDetail() {
     }
   };
 
+  const revokeDelegation = async (delegationId: string) => {
+    setRevokingId(delegationId);
+    try {
+      await fetch("/api/delegations", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: delegationId }),
+      });
+      setConfirmRevokeId(null);
+      load();
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
+  const createDelegation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pool || !pool.reserves[0]) return;
+    const customer = pool.reserves[0].customer;
+    setCreating(true);
+    setCreateResult(null);
+    try {
+      const session = generateKeypair();
+      const cap = parseFloat(createCap);
+      const durationMs =
+        createDuration === "24h" ? 24 * 3600_000
+        : createDuration === "7d" ? 7 * 24 * 3600_000
+        : 30 * 24 * 3600_000;
+      const expiresAt = new Date(Date.now() + durationMs).toISOString();
+
+      const authMessage = buildDelegationMessage(
+        customer.publicKey,
+        session.publicKey,
+        createScope,
+        "*",
+        cap,
+        expiresAt
+      );
+      const authSignature = await signMessage(authMessage, createKey);
+
+      const res = await fetch("/api/delegations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: customer.id,
+          sessionPubKey: session.publicKey,
+          scopeProviderIds: createScope,
+          scopeToolIds: "*",
+          spendCap: cap,
+          expiresAt,
+          authSignature,
+        }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        setCreateResult({
+          success: true,
+          message: "Delegation created.",
+          sessionPubKey: session.publicKey,
+          sessionPrivateKey: session.privateKey,
+        });
+        setCreateKey("");
+        setShowCreateForm(false);
+        load();
+      } else {
+        setCreateResult({
+          success: false,
+          message: data.error || "Failed to create delegation",
+        });
+      }
+    } catch (err) {
+      setCreateResult({
+        success: false,
+        message: err instanceof Error ? err.message : "Signing failed — check your private key",
+      });
+    } finally {
+      setCreating(false);
+    }
+  };
+
   if (!pool) return <div className="text-zinc-500">Loading pool...</div>;
 
   const { reserves, obligations, poolHealth } = pool;
   const reserve = reserves[0];
+  const isSelfCustody = reserve?.customer.signingMode === "self-custody";
   const poolName = reserve ? `${reserve.customer.name} Pool` : "Pool";
   const reserveValueErg =
     Number(BigInt(poolHealth.totalReserveValueNanoErg)) / 1e9;
@@ -407,21 +507,151 @@ export default function PoolDetail() {
 
       {/* Agent Authority */}
       <div>
-        <div className="flex items-center gap-3 mb-3">
-          <h2 className="text-xl font-semibold">Agent Authority</h2>
-          <AuthorityModeBadge mode={pool.authority.summary.authorityMode} />
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl font-semibold">Agent Authority</h2>
+            <AuthorityModeBadge mode={pool.authority.summary.authorityMode} />
+          </div>
+          {isSelfCustody && !showCreateForm && (
+            <button
+              onClick={() => { setShowCreateForm(true); setCreateResult(null); }}
+              className="text-sm px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors"
+            >
+              + New Delegation
+            </button>
+          )}
         </div>
 
-        {pool.authority.summary.authorityMode === "tracker-managed" ? (
+        {/* Create result banner (session key — shown once) */}
+        {createResult && (
+          <div
+            className={`mb-3 px-4 py-3 rounded-lg text-sm border ${
+              createResult.success
+                ? "bg-green-900/20 border-green-800 text-green-400"
+                : "bg-red-900/20 border-red-800 text-red-400"
+            }`}
+          >
+            <p>{createResult.message}</p>
+            {createResult.sessionPubKey && (
+              <div className="mt-2 space-y-1">
+                <p className="text-xs text-yellow-400 font-medium">
+                  Save these keys — they are shown only once.
+                </p>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-zinc-500">Session Public Key:</span>
+                  <code className="text-xs font-mono break-all">{createResult.sessionPubKey}</code>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(createResult.sessionPubKey!)}
+                    className="text-xs text-zinc-500 hover:text-white"
+                  >
+                    copy
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-zinc-500">Session Private Key:</span>
+                  <code className="text-xs font-mono break-all">{createResult.sessionPrivateKey}</code>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(createResult.sessionPrivateKey!)}
+                    className="text-xs text-zinc-500 hover:text-white"
+                  >
+                    copy
+                  </button>
+                </div>
+              </div>
+            )}
+            <button
+              onClick={() => setCreateResult(null)}
+              className="mt-2 text-xs text-zinc-500 hover:text-white"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Create delegation form */}
+        {showCreateForm && isSelfCustody && (
+          <form onSubmit={createDelegation} className="border border-zinc-700 rounded-lg p-4 space-y-3 bg-zinc-900 mb-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-sm text-zinc-400 mb-1">Provider Scope</label>
+                <select
+                  value={createScope}
+                  onChange={(e) => setCreateScope(e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
+                >
+                  <option value="*">All providers</option>
+                  {obligations.map((o) => (
+                    <option key={o.providerId} value={o.providerId}>
+                      {o.providerName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-zinc-400 mb-1">Spend Cap ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={createCap}
+                  onChange={(e) => setCreateCap(e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-zinc-400 mb-1">Duration</label>
+                <select
+                  value={createDuration}
+                  onChange={(e) => setCreateDuration(e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
+                >
+                  <option value="24h">24 hours</option>
+                  <option value="7d">7 days</option>
+                  <option value="30d">30 days</option>
+                </select>
+              </div>
+            </div>
+            <div className="border border-blue-800 rounded-lg p-3 bg-blue-900/20">
+              <label className="block text-sm text-blue-400 mb-1">Root Private Key (hex)</label>
+              <input
+                type="password"
+                value={createKey}
+                onChange={(e) => setCreateKey(e.target.value)}
+                placeholder="Enter your secp256k1 private key..."
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-600"
+              />
+              <p className="text-xs text-blue-400/60 mt-1">
+                Used only in your browser to sign the delegation. Never transmitted.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={!createKey || creating}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                {creating ? "Signing..." : "Create & Sign Delegation"}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowCreateForm(false); setCreateKey(""); }}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+
+        {pool.authority.summary.authorityMode === "tracker-managed" && !isSelfCustody ? (
           <div className="border border-zinc-800 rounded-lg px-5 py-6 text-center">
             <p className="text-zinc-400 text-sm">
               No delegated authority grants for this pool — obligations are
               tracker-managed.
             </p>
             <p className="text-zinc-600 text-xs mt-2">
-              The pool operator holds signing authority directly. Agent
-              obligations are committed via the tracker without per-agent
-              delegation scopes or spend caps.
+              Delegations require a self-custody customer. This pool&apos;s signing
+              authority is held by the tracker.
             </p>
           </div>
         ) : (
@@ -452,54 +682,86 @@ export default function PoolDetail() {
                     <th className="px-4 py-3 font-medium">Utilization</th>
                     <th className="px-4 py-3 font-medium">Expires</th>
                     <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pool.authority.delegations.map((d) => (
-                    <tr
-                      key={d.id}
-                      className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
-                    >
-                      <td className="px-4 py-3 font-mono text-zinc-400">
-                        {d.sessionPubKey.substring(0, 16)}...
-                      </td>
-                      <td className="px-4 py-3 text-zinc-300">
-                        <span className="block">{d.scopeProviders}</span>
-                        {d.scopeTools !== "All tools" && (
-                          <span className="block text-xs text-zinc-500">
-                            {d.scopeTools}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 font-mono">${d.spendCap.toFixed(2)}</td>
-                      <td className="px-4 py-3 font-mono">${d.spentSoFar.toFixed(2)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${
-                                d.utilization >= 0.9
-                                  ? "bg-red-500"
-                                  : d.utilization >= 0.7
-                                    ? "bg-yellow-500"
-                                    : "bg-green-500"
-                              }`}
-                              style={{ width: `${Math.min(d.utilization * 100, 100)}%` }}
-                            />
+                  {pool.authority.delegations.map((d) => {
+                    const canRevoke = ["active", "approaching-cap", "approaching-expiry"].includes(d.complianceState);
+                    return (
+                      <tr
+                        key={d.id}
+                        className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
+                      >
+                        <td className="px-4 py-3 font-mono text-zinc-400">
+                          {d.sessionPubKey.substring(0, 16)}...
+                        </td>
+                        <td className="px-4 py-3 text-zinc-300">
+                          <span className="block">{d.scopeProviders}</span>
+                          {d.scopeTools !== "All tools" && (
+                            <span className="block text-xs text-zinc-500">
+                              {d.scopeTools}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono">${d.spendCap.toFixed(2)}</td>
+                        <td className="px-4 py-3 font-mono">${d.spentSoFar.toFixed(2)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  d.utilization >= 0.9
+                                    ? "bg-red-500"
+                                    : d.utilization >= 0.7
+                                      ? "bg-yellow-500"
+                                      : "bg-green-500"
+                                }`}
+                                style={{ width: `${Math.min(d.utilization * 100, 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-zinc-500">
+                              {Math.round(d.utilization * 100)}%
+                            </span>
                           </div>
-                          <span className="text-xs text-zinc-500">
-                            {Math.round(d.utilization * 100)}%
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-zinc-400">
-                        <TimeRemaining ms={d.timeRemainingMs} />
-                      </td>
-                      <td className="px-4 py-3">
-                        <ComplianceBadge state={d.complianceState} />
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="px-4 py-3 text-zinc-400">
+                          <TimeRemaining ms={d.timeRemainingMs} />
+                        </td>
+                        <td className="px-4 py-3">
+                          <ComplianceBadge state={d.complianceState} />
+                        </td>
+                        <td className="px-4 py-3">
+                          {canRevoke && confirmRevokeId !== d.id && (
+                            <button
+                              onClick={() => setConfirmRevokeId(d.id)}
+                              disabled={revokingId === d.id}
+                              className="text-sm px-2 py-0.5 text-red-400 border border-red-800/50 rounded hover:bg-red-900/30 transition-colors disabled:opacity-30"
+                            >
+                              Revoke
+                            </button>
+                          )}
+                          {confirmRevokeId === d.id && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => revokeDelegation(d.id)}
+                                disabled={revokingId === d.id}
+                                className="text-xs px-2 py-0.5 bg-red-900/50 text-red-400 border border-red-800 rounded hover:bg-red-900 transition-colors disabled:opacity-30"
+                              >
+                                {revokingId === d.id ? "..." : "Confirm"}
+                              </button>
+                              <button
+                                onClick={() => setConfirmRevokeId(null)}
+                                className="text-xs px-2 py-0.5 text-zinc-500 hover:text-white"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

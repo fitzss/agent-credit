@@ -354,7 +354,7 @@ export async function GET(req: NextRequest) {
       contractVersion: r.contractVersion,
       avlTreeDigest: r.avlTreeDigest,
       updatedAt: r.updatedAt.toISOString(),
-      customer: { id: r.customer.id, name: r.customer.name, publicKey: r.customer.publicKey },
+      customer: { id: r.customer.id, name: r.customer.name, publicKey: r.customer.publicKey, signingMode: r.customer.signingMode },
     })),
     obligations: obligationsWithReadiness,
     poolHealth: {
