@@ -1,10 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 /**
  * Pool summary endpoint (Phase 1a+b).
- * Assembles pool health, reserve state, obligation readiness, and
- * authority/delegation visibility from Prisma only (never calls sidecar).
+ *
+ * ?reserveId=X  → full detail for a single pool (scoped to that reserve's customer)
+ * (no param)    → lightweight list of active reserves for the pool selector
  */
 
 const NANO_PER_CREDIT = 1_000_000_000;
@@ -18,12 +19,45 @@ type SettlementReadiness =
 
 type PoolStatus = "healthy" | "low-coverage" | "depleted" | "offline";
 
-export async function GET() {
-  // Active reserves with customer info
+export async function GET(req: NextRequest) {
+  const reserveId = req.nextUrl.searchParams.get("reserveId");
+
+  // --- Selector mode: return lightweight reserve list ---
+  if (!reserveId) {
+    const allReserves = await prisma.reserve.findMany({
+      where: { lifecycle: "active" },
+      include: { customer: true },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    const reserveList = await Promise.all(
+      allReserves.map(async (r) => {
+        const obligationCount = await prisma.obligationState.count({
+          where: { customerId: r.customerId },
+        });
+        const delegationCount = await prisma.delegation.count({
+          where: { customerId: r.customerId },
+        });
+        return {
+          id: r.id,
+          customerName: r.customer.name,
+          customerId: r.customer.id,
+          valueNanoErg: r.valueNanoErg.toString(),
+          lifecycle: r.lifecycle,
+          contractVersion: r.contractVersion,
+          obligationCount,
+          authorityMode: delegationCount > 0 ? "delegated" : "tracker-managed",
+        };
+      })
+    );
+
+    return NextResponse.json({ mode: "selector", reserves: reserveList });
+  }
+
+  // --- Detail mode: full pool data scoped to one reserve ---
   const reserves = await prisma.reserve.findMany({
-    where: { lifecycle: "active" },
+    where: { id: reserveId, lifecycle: "active" },
     include: { customer: true },
-    orderBy: { updatedAt: "desc" },
   });
 
   if (reserves.length === 0) {
