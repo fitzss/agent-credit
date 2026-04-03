@@ -6,7 +6,7 @@ It allows agents to **incur obligations now under bounded delegated authority**,
 
 This project is **obligation-first, not payment-first**. It is not a bot wallet, not a checkout abstraction, and not a generic billing dashboard. The core primitive is a governed commercial obligation: an agent is allowed to act within explicit bounds, tracker state witnesses the resulting debt, and the system settles later with real cryptographic recourse.
 
-**Reviewer start here: [`docs/milestone-summary.md`](docs/milestone-summary.md)**
+**Reviewer start here: [`docs/milestone-summary.md`](docs/milestone-summary.md)** | **Whitepaper: [`Agent_Credit_Whitepaper.md`](Agent_Credit_Whitepaper.md)**
 
 ---
 
@@ -127,6 +127,7 @@ Open `http://localhost:3000/pool` for the operator dashboard.
 
 | Document | Purpose |
 |---|---|
+| [`Agent_Credit_Whitepaper.md`](Agent_Credit_Whitepaper.md) | **Whitepaper.** Obligation-first thesis, authority model, settlement architecture. |
 | [`docs/milestone-summary.md`](docs/milestone-summary.md) | **Start here.** What is proven, what is not, reviewer quickstart. |
 | [`docs/operator-demo-plan.md`](docs/operator-demo-plan.md) | Demo sequence, proof stack, troubleshooting |
 | [`docs/glossary.md`](docs/glossary.md) | Key terms: delegation, obligation, reserve, pool, novation, etc. |
