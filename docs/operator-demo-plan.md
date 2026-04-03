@@ -134,3 +134,26 @@ curl -s -X POST http://localhost:3000/api/reserves/recover-pending \
 | Harness < 12/12 | Do not demo. Check which test failed. If drift test: run `curl -X PATCH http://localhost:3000/api/reserves -H 'Content-Type: application/json' -d '{"reserveId":"e7f6f1c2-39ec-4bfe-b06f-7c12c37fb18c"}'` to refresh digest. |
 | Redemption stuck pending | Wait for next block (up to 60 sec), then recover-pending. |
 | DB corrupted | `cp ~/ergo-testnet-backup/demo-baseline.db ~/agent-credit/agent-tab/prisma/dev.db` and restart Agent Tab. |
+
+## Proof Stack
+
+Run the full proof suite before any external demo:
+
+```bash
+cd agent-tab && bash scripts/prove.sh
+```
+
+| Suite | Layer | Checks | What it proves |
+|---|---|---|---|
+| `validate.sh` | Settlement substrate | 12 | Redemption, recovery, drift detection, transfer guardrails, duplicate blocking, contract versioning |
+| `test-authority-loop.ts` | Positive authority | 6 | Create delegation → proxy call with session key → session signing → spend cap decrements → pool dashboard reflects |
+| `test-authority-guardrails.ts` | Negative authority | 10 | Wrong scope, expired, exceeded cap, and revoked delegations all rejected without mutating commercial state |
+
+**28/28 = system verified.** If any suite fails, do not demo.
+
+Authority tests require the authority-demo fixture:
+```bash
+npx tsx scripts/seed-authority-demo.ts        # seed
+npx tsx scripts/seed-authority-demo.ts --cleanup  # remove
+```
+Without the fixture, `prove.sh` runs settlement tests only (12/12) and skips authority tests with a note.
