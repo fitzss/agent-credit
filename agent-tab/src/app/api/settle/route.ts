@@ -21,9 +21,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No obligation found" }, { status: 404 });
   }
 
-  const settleAmount = Math.min(amount, obligation.currentAmount);
-  if (settleAmount <= 0) {
-    return NextResponse.json({ error: "Nothing to settle" }, { status: 400 });
+if (!providerId || !customerId || !amount || amount <= 0) {
+  return NextResponse.json({ error: "Missing or invalid providerId, customerId, or amount" }, { status: 400 });
+}
   }
 
   const customer = await prisma.customer.findUnique({ where: { id: customerId } });
