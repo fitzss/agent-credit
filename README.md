@@ -99,58 +99,46 @@ cd agent-tab && bash scripts/validate.sh
 
 ## Current milestone
 
-**Tag: `milestone-v0.1-settlement`** — Repeatable bilateral credit settlement with novation.
+**MVP v3** — Governed agent credit with bounded delegated authority.
 
-This milestone represents a complete prototype of the off-chain credit → on-chain settlement path:
+**Start here: [`docs/milestone-summary.md`](docs/milestone-summary.md)** — full reviewer-facing summary of what is proven, what is prototype-grade, and how to run it.
 
-- **20 commits** from initial reserve setup through novation
-- **9+ on-chain redemption transactions** confirmed on Ergo private testnet
-- **3 debt transfers** (novation) executed and verified
-- **12/12 regression scenarios** passing in automated harness
-- **0.66+ ERG total redeemed** across multiple creditor pairs from a single 1.0 ERG reserve
+### Proof stack (28 automated checks)
 
-### Recommended demo path
+```bash
+cd agent-tab && bash scripts/prove.sh
+```
 
-For the smoothest demo experience:
-
-1. Start with `DEMO_MODE=true` for longer confirmation windows
-2. Show system state: reserves, obligations, tracker entries
-3. Execute a novation (instant — no chain interaction)
-4. Show guardrails: duplicate block, v1 repeat block, drift detection
-5. Run the regression harness (12/12 in ~2 minutes)
-6. Pre-deploy the tracker for the pair you plan to redeem (reduces redemption wait)
-7. Execute a redemption — if pending, recover with `/recover-pending`
-8. Verify app/chain consistency
-
-Steps 1-5 take ~3 minutes and demonstrate the full feature set without chain waiting. Steps 6-8 add the live on-chain proof (~2-5 minutes depending on block times).
-
-### What is proven live vs tested by harness
-
-| Layer | Proven | Method |
+| Suite | Checks | What it proves |
 |---|---|---|
-| Basis contract (insert + update) | On-chain | BasisSpec (27 tests) + live testnet txs |
-| Schnorr signatures + AVL proofs | On-chain | Live redemption txs |
-| Multi-entry tracker trees | On-chain | Live multi-pair redemption |
-| Novation (debt transfer) | App + chain | Transfer → auto-tracker-update → redemption |
-| Reconciliation guardrails | App | Automated harness (12/12) |
-| Drift detection | App | Automated harness |
-| Contract version derivation | App + sidecar | Automated harness |
-| Pending recovery | App + chain | Live testnet sessions |
+| Settlement substrate | 12 | On-chain redemption, recovery, drift, transfers, duplicates |
+| Authority loop (positive) | 6 | Create delegation → use via proxy → spend cap decrements |
+| Authority guardrails (negative) | 10 | Scope/expiry/cap/revocation rejected without mutation |
+
+### What is built
+
+- On-chain settlement with Schnorr + AVL proofs on Ergo
+- Single-pool operator dashboard (`/pool/[id]`) with reserve health, obligation readiness, tracker state, settlement history
+- Bounded delegated authority: create/revoke delegations with scope, spend cap, expiry
+- Authority visibility: compliance badges, utilization bars, delegation table
+- Novation (debt transfer between creditors)
+- Pending recovery, drift detection, contract versioning
+- Isolated private testnet with reproducible demo fixture
 
 ## Documentation
 
 | Document | Location | Purpose |
 |---|---|---|
-| **Reviewer Brief** | `agent-tab/docs/reviewer-brief.md` | Concise overview for external reviewers |
-| **Demo Checklist** | `agent-tab/docs/demo-checklist.md` | Pre-flight + execution checklist |
-| **Demo Narration** | `agent-tab/docs/demo-narration.md` | Talk track with 7 beats (~6-8 min) |
-| **Demo Walkthrough** | `agent-tab/docs/demo-walkthrough.md` | Detailed step-by-step commands |
-| **V2 Runbook** | `agent-tab/docs/v2-runbook.md` | Operator guide for the repeatable settlement path |
-| **Architecture Notes** | `agent-tab/docs/architecture-notes.md` | Semantics, invariants, chain vs app truth |
-| **Smoke Test** | `agent-tab/docs/smoke-test.md` | 7-step scriptable verification |
+| **Milestone Summary** | `docs/milestone-summary.md` | **Start here.** What is proven, what is not, reviewer quickstart. |
+| **Operator Demo Plan** | `docs/operator-demo-plan.md` | Demo day sequence, proof stack, troubleshooting |
+| **Fixture Reuse Note** | `docs/fixture-reuse-note.md` | What persists, what drifts, when to restore |
+| **Proof Stack** | `agent-tab/scripts/prove.sh` | Unified runner: 28 checks in one command |
+| **Validation Harness** | `agent-tab/scripts/validate.sh` | Settlement substrate: 12 checks |
+| **Authority Loop** | `agent-tab/scripts/test-authority-loop.ts` | Positive authority: 6 checks |
+| **Authority Guardrails** | `agent-tab/scripts/test-authority-guardrails.ts` | Negative authority: 10 checks |
+| **Authority Demo Fixture** | `agent-tab/scripts/seed-authority-demo.ts` | Self-contained delegated authority fixture |
 | **Validation Matrix** | `agent-tab/docs/validation-matrix.md` | 13 regression scenarios |
-| **Validation Harness** | `agent-tab/scripts/validate.sh` | Executable: 12 automated checks |
-| **Contract Reconciliation** | `agent-tab/docs/contract-reconciliation.md` | Line-by-line contract verification |
+| **Architecture Notes** | `agent-tab/docs/architecture-notes.md` | Semantics, invariants, chain vs app truth |
 
 ## Known limitations
 
