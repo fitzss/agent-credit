@@ -1,10 +1,39 @@
 # Agent Credit
 
-Governed credit for AI agents: bounded delegated authority, off-chain obligations, and on-chain reserve-backed settlement on [Ergo](https://ergoplatform.org) via [ChainCash/Basis](https://www.ergoforum.org/t/basis-a-foundational-on-chain-reserve-approach-to-support-a-variety-of-offchain-protocols/5153).
+**Agent Credit is a governed commercial operating layer for software agents.**
 
-Agents incur obligations under explicit limits. Operators manage authority, visibility, and settlement from a single pool dashboard. Collateral is locked on-chain; redemption uses real Schnorr signatures and AVL proofs.
+It allows agents to **incur obligations now under bounded delegated authority**, while operators manage authority, visibility, and settlement from a reserve-scoped product surface. Debt accumulates **off-chain**; settlement happens later against **on-chain reserve-backed collateral** on [Ergo](https://ergoplatform.org) via [ChainCash/Basis](https://www.ergoforum.org/t/basis-a-foundational-on-chain-reserve-approach-to-support-a-variety-of-offchain-protocols/5153).
+
+This project is **obligation-first, not payment-first**. It is not a bot wallet, not a checkout abstraction, and not a generic billing dashboard. The core primitive is a governed commercial obligation: an agent is allowed to act within explicit bounds, tracker state witnesses the resulting debt, and the system settles later with real cryptographic recourse.
 
 **Reviewer start here: [`docs/milestone-summary.md`](docs/milestone-summary.md)**
+
+---
+
+## Why this exists
+
+Most agent payment systems force one of three models:
+
+1. **Prepaid balance** — capital parked in advance, balances fragment across providers, workflows fail when one silo runs dry
+2. **Approval at spend time** — a human approves each action, autonomy breaks exactly where useful work begins
+3. **Custodial platform ledger** — a platform smooths the UX, but the commercial object collapses into its internal ledger
+
+Agent Credit takes a different approach:
+
+- Agents create **obligations**, not just payments
+- Authority is **delegated with explicit bounds** (scope, cap, expiry)
+- Debt is tracked **off-chain** with witnessed tracker state
+- Settlement happens later against **reserve-backed on-chain collateral**
+
+---
+
+## What is live today
+
+- Reserve-backed settlement is live
+- Bounded delegated authority is live
+- Single-pool operator control surface is live
+- Positive and negative authority behavior is proof-backed
+- Settlement substrate is proof-backed (28 automated checks)
 
 ## Proof stack
 
