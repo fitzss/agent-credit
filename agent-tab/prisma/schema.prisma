@@ -56,6 +56,7 @@ model AgentIdentity {
 
   customer            Customer      @relation(fields: [customerId], references: [id])
   usageEvents         UsageEvent[]
+  delegations         Delegation[]
 }
 
 model Tool {
@@ -93,6 +94,7 @@ model CreditLine {
 model Delegation {
   id                  String        @id @default(uuid())
   customerId          String
+  agentIdentityId     String?       // null = legacy/unbound delegation
   sessionPubKey       String        // hex-encoded session public key
   scopeProviderIds    String        @default("*") // comma-separated or "*"
   scopeToolIds        String        @default("*") // comma-separated or "*"
@@ -105,6 +107,7 @@ model Delegation {
   createdAt           DateTime      @default(now())
 
   customer            Customer      @relation(fields: [customerId], references: [id])
+  agentIdentity       AgentIdentity? @relation(fields: [agentIdentityId], references: [id])
   obligationUpdates   ObligationUpdate[]
 }
 
@@ -136,6 +139,7 @@ model ObligationUpdate {
   id                  String        @id @default(uuid())
   obligationStateId   String
   delegationId        String?       // which delegation authorized this (null = tracker-managed or manual)
+  agentIdentityId     String?       // which authenticated agent advanced this debt
   version             Int
   previousAmount      Float
   newAmount           Float

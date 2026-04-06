@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { buildCanonicalMessage, signMessage, verifySignature } from "@/lib/crypto";
 import {
   buildDelegationMessage,
+  buildDelegationMessageV1,
   verifyDelegationAuth,
   checkDelegationScope,
   verifySessionSignature,
@@ -38,6 +39,7 @@ export interface ProposeInput {
   expectedVersion: number; // optimistic concurrency — must match current version
   requestId: string; // idempotency key
   sessionPubKey?: string; // for delegated signing
+  agentIdentityId?: string; // authenticated agent (from proxy)
   customerId?: string; // FK for obligation creation
   // Pricing context (tracker records, not just blind write)
   toolId?: string;
@@ -191,8 +193,14 @@ export class TrackerService {
         throw new TrackerError("No active delegation for this session key", "DELEGATION_NOT_FOUND");
       }
 
+      // Agent binding check
+      if (delegation.agentIdentityId && delegation.agentIdentityId !== input.agentIdentityId) {
+        throw new TrackerError("Agent not bound to this delegation", "AGENT_DELEGATION_MISMATCH");
+      }
+
       const scopeCheck = checkDelegationScope(
         delegation,
+        input.agentIdentityId ?? "",
         input.providerId ?? "",
         input.toolId ?? "",
         input.delta
@@ -239,6 +247,7 @@ export class TrackerService {
         data: {
           obligationStateId: note.id,
           delegationId,
+          agentIdentityId: input.agentIdentityId ?? null,
           version: newVersion,
           previousAmount: currentAmount,
           newAmount: currentAmount + input.delta,
@@ -292,6 +301,7 @@ export class TrackerService {
       data: {
         obligationStateId: note.id,
         delegationId,
+        agentIdentityId: input.agentIdentityId ?? null,
         version: newVersion,
         previousAmount: currentAmount,
         newAmount: currentAmount + pendingAmount + input.delta,
@@ -369,6 +379,11 @@ export class TrackerService {
       if (new Date() >= delegation.expiresAt) {
         await prisma.delegation.update({ where: { id: input.delegationId }, data: { status: "expired" } });
         throw new TrackerError("Delegation expired", "DELEGATION_EXPIRED");
+      }
+
+      // Agent binding: compare delegation's bound agent against the stored initiating agent
+      if (delegation.agentIdentityId && update.agentIdentityId !== delegation.agentIdentityId) {
+        throw new TrackerError("Agent not bound to this delegation", "AGENT_DELEGATION_MISMATCH");
       }
 
       verified = await verifySessionSignature(
@@ -605,6 +620,7 @@ export class TrackerService {
    */
   async createDelegation(input: {
     debtorPubKey: string;
+    agentIdentityId?: string;
     sessionPubKey: string;
     scopeProviderIds: string;
     scopeToolIds: string;
@@ -612,14 +628,25 @@ export class TrackerService {
     expiresAt: string;
     authSignature: string;
   }) {
-    const authMessage = buildDelegationMessage(
-      input.debtorPubKey,
-      input.sessionPubKey,
-      input.scopeProviderIds,
-      input.scopeToolIds,
-      input.spendCap,
-      input.expiresAt
-    );
+    // Use v2 message format if agent-bound, v1 for legacy
+    const authMessage = input.agentIdentityId
+      ? buildDelegationMessage(
+          input.debtorPubKey,
+          input.agentIdentityId,
+          input.sessionPubKey,
+          input.scopeProviderIds,
+          input.scopeToolIds,
+          input.spendCap,
+          input.expiresAt
+        )
+      : buildDelegationMessageV1(
+          input.debtorPubKey,
+          input.sessionPubKey,
+          input.scopeProviderIds,
+          input.scopeToolIds,
+          input.spendCap,
+          input.expiresAt
+        );
 
     const verified = await verifyDelegationAuth(authMessage, input.authSignature, input.debtorPubKey);
     if (!verified) {
@@ -634,6 +661,7 @@ export class TrackerService {
     const delegation = await prisma.delegation.create({
       data: {
         customerId: customer.id,
+        agentIdentityId: input.agentIdentityId ?? null,
         sessionPubKey: input.sessionPubKey,
         scopeProviderIds: input.scopeProviderIds,
         scopeToolIds: input.scopeToolIds,
@@ -644,7 +672,7 @@ export class TrackerService {
       },
     });
 
-    return { delegationId: delegation.id, verified: true };
+    return { delegationId: delegation.id, agentIdentityId: input.agentIdentityId ?? null, verified: true };
   }
 
   /**

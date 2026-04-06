@@ -40,7 +40,8 @@ const IDS = {
   obligation: "auth-demo-obl-001",
   delegationActive: "auth-demo-deleg-active-001",
   delegationExpired: "auth-demo-deleg-expired-001",
-  agent: "auth-demo-agent-001",
+  agent1: "auth-demo-agent-001",
+  agent2: "auth-demo-agent-002",
 };
 
 const DEMO_STATE_DIR = path.join(__dirname, "..", ".demo-state");
@@ -61,7 +62,7 @@ async function cleanup() {
   await prisma.usageEvent.deleteMany({ where: { customerId: IDS.customer } });
   await prisma.obligationState.deleteMany({ where: { customerId: IDS.customer } });
   await prisma.creditLine.deleteMany({ where: { customerId: IDS.customer } });
-  await prisma.agentIdentity.deleteMany({ where: { customerId: IDS.customer } });
+  await prisma.agentIdentity.deleteMany({ where: { id: { in: [IDS.agent1, IDS.agent2] } } });
   await prisma.reserve.deleteMany({ where: { id: IDS.reserve } });
   await prisma.tool.deleteMany({ where: { providerId: IDS.provider } });
   await prisma.provider.deleteMany({ where: { id: IDS.provider } });
@@ -157,16 +158,24 @@ async function seed() {
   });
   console.log(`Created credit line: Bolt Labs ↔ Bolt Tools ($50 limit)`);
 
-  // --- Agent identity ---
+  // --- Agent identities ---
   await prisma.agentIdentity.create({
     data: {
-      id: IDS.agent,
+      id: IDS.agent1,
       customerId: customer.id,
       label: "auto-researcher",
       apiKey: "auth-demo-key-001",
     },
   });
-  console.log(`Created agent: auto-researcher (apiKey: auth-demo-key-001)`);
+  await prisma.agentIdentity.create({
+    data: {
+      id: IDS.agent2,
+      customerId: customer.id,
+      label: "ops-monitor",
+      apiKey: "auth-demo-key-002",
+    },
+  });
+  console.log(`Created agents: auto-researcher (key-001), ops-monitor (key-002)`);
 
   // --- Obligation ---
   await prisma.obligationState.create({
@@ -182,12 +191,12 @@ async function seed() {
   });
   console.log(`Created obligation: Bolt Labs → Bolt Tools ($0)`);
 
-  // --- Delegation 1: Active, approaching cap ---
+  // --- Delegation 1: Active, approaching cap, bound to agent-001 ---
   const now = new Date();
   const sessionKeys1 = generateKeypair();
   const expiresAt1 = new Date(now.getTime() + 5 * 24 * 3600_000);
   const authMsg1 = buildDelegationMessage(
-    custKeys.publicKey, sessionKeys1.publicKey,
+    custKeys.publicKey, IDS.agent1, sessionKeys1.publicKey,
     provider.id, "*", 20.0, expiresAt1.toISOString()
   );
   const authSig1 = await signMessage(authMsg1, custKeys.privateKey);
@@ -196,6 +205,7 @@ async function seed() {
     data: {
       id: IDS.delegationActive,
       customerId: customer.id,
+      agentIdentityId: IDS.agent1,
       sessionPubKey: sessionKeys1.publicKey,
       scopeProviderIds: provider.id,
       scopeToolIds: "*",
@@ -207,13 +217,13 @@ async function seed() {
       status: "active",
     },
   });
-  console.log(`Created delegation: active, $16.50/$20 (82.5%), expires in 5 days`);
+  console.log(`Created delegation: active, bound to auto-researcher, $16.50/$20 (82.5%)`);
 
-  // --- Delegation 2: Expired ---
+  // --- Delegation 2: Expired, bound to agent-001 ---
   const sessionKeys2 = generateKeypair();
   const expiredAt = new Date(now.getTime() - 2 * 24 * 3600_000);
   const authMsg2 = buildDelegationMessage(
-    custKeys.publicKey, sessionKeys2.publicKey,
+    custKeys.publicKey, IDS.agent1, sessionKeys2.publicKey,
     "*", "*", 10.0, expiredAt.toISOString()
   );
   const authSig2 = await signMessage(authMsg2, custKeys.privateKey);
@@ -222,6 +232,7 @@ async function seed() {
     data: {
       id: IDS.delegationExpired,
       customerId: customer.id,
+      agentIdentityId: IDS.agent1,
       sessionPubKey: sessionKeys2.publicKey,
       scopeProviderIds: "*",
       scopeToolIds: "*",
@@ -233,7 +244,7 @@ async function seed() {
       status: "expired",
     },
   });
-  console.log(`Created delegation: expired, $8/$10, expired 2 days ago`);
+  console.log(`Created delegation: expired, bound to auto-researcher, $8/$10`);
 
   console.log("");
   console.log("=== Authority demo fixture ready ===");

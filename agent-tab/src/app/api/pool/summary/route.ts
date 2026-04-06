@@ -184,7 +184,7 @@ export async function GET(req: NextRequest) {
   // Delegations for pool customers only
   const delegations = await prisma.delegation.findMany({
     where: { customerId: { in: poolCustomerIds } },
-    include: { customer: true },
+    include: { customer: true, agentIdentity: true },
     orderBy: { createdAt: "desc" },
   });
 
@@ -253,6 +253,8 @@ export async function GET(req: NextRequest) {
       id: d.id,
       customerId: d.customerId,
       customerName: d.customer.name,
+      agentIdentityId: d.agentIdentityId,
+      agentLabel: d.agentIdentity?.label ?? null,
       sessionPubKey: d.sessionPubKey,
       scopeProviders,
       scopeTools,
@@ -322,6 +324,12 @@ export async function GET(req: NextRequest) {
     }),
   }));
 
+  // Agents for pool customers (for delegation create dropdown)
+  const agents = await prisma.agentIdentity.findMany({
+    where: { customerId: { in: poolCustomerIds }, status: "active" },
+    select: { id: true, label: true, customerId: true },
+  });
+
   // Recent settlement events for pool obligations (last 10)
   const obligationIds = obligations.map((o) => o.id);
   const recentSettlements = obligationIds.length > 0
@@ -367,6 +375,7 @@ export async function GET(req: NextRequest) {
       delegations: delegationsWithCompliance,
       summary: authoritySummary,
     },
+    agents,
     tracker: trackerData,
     settlements: settlementsData,
   });

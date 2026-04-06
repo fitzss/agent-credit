@@ -28,9 +28,14 @@ import { buildDelegationMessage } from "../src/lib/tracker/delegation";
 import * as fs from "fs";
 import * as path from "path";
 
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
+
 const BASE = "http://localhost:3000";
 const RESERVE_ID = "auth-demo-reserve-001";
 const TOOL_ID = "auth-demo-tool-analyze-001";
+const AGENT_ID = "auth-demo-agent-001";
 const AGENT_KEY = "auth-demo-key-001";
 const PROVIDER_ID = "auth-demo-bolt-tools-001";
 const OBLIGATION_ID = "auth-demo-obl-001";
@@ -81,6 +86,7 @@ interface PoolDelegation {
   spendCap: number;
   utilization: number;
   complianceState: string;
+  agentLabel: string | null;
 }
 
 async function getPoolState() {
@@ -116,19 +122,20 @@ async function main() {
   console.log(`  Active delegations: ${before.activeDelegations}`);
   console.log(`  Authority mode: ${before.authorityMode}`);
 
-  // --- Step 1: Create delegation ---
-  console.log("\nStep 1: Create delegation ($5 cap, scoped to Bolt Tools, 24h)");
+  // --- Step 1: Create agent-bound delegation ---
+  console.log("\nStep 1: Create agent-bound delegation ($5 cap, bound to auto-researcher, 24h)");
 
   const session = generateKeypair();
   const expiresAt = new Date(Date.now() + 24 * 3600_000).toISOString();
   const delegationMsg = buildDelegationMessage(
-    rootPubKey, session.publicKey,
+    rootPubKey, AGENT_ID, session.publicKey,
     PROVIDER_ID, "*", 5.0, expiresAt
   );
   const delegationSig = await signMessage(delegationMsg, rootPrivKey);
 
   const { status: createStatus, data: createData } = await post(`${BASE}/api/delegations`, {
     customerId: "auth-demo-bolt-labs-001",
+    agentIdentityId: AGENT_ID,
     sessionPubKey: session.publicKey,
     scopeProviderIds: PROVIDER_ID,
     scopeToolIds: "*",
@@ -137,8 +144,8 @@ async function main() {
     authSignature: delegationSig,
   });
 
-  if (createStatus === 201 && createData.delegationId) {
-    pass("Delegation created with valid root-key signature");
+  if (createStatus === 201 && createData.delegationId && createData.agentIdentityId === AGENT_ID) {
+    pass("Agent-bound delegation created (v2 format)");
   } else {
     fail("Create delegation", createData.error || `status ${createStatus}`);
     process.exit(1);
@@ -194,7 +201,24 @@ async function main() {
   } else {
     fail("Sign commitment", signData.error || `verified=${signData.verified} delegated=${signData.delegated}`);
     await del(`${BASE}/api/delegations`, { id: delegationId });
+    await prisma.$disconnect();
     process.exit(1);
+  }
+
+  // --- Step 3b: Verify agent binding on committed ObligationUpdate ---
+  console.log("\nStep 3b: Verify agent binding persisted on ObligationUpdate");
+
+  const committedUpdate = await prisma.obligationUpdate.findUnique({ where: { id: updateId } });
+  if (committedUpdate && committedUpdate.agentIdentityId === AGENT_ID) {
+    pass(`ObligationUpdate.agentIdentityId = ${AGENT_ID.substring(0, 20)}...`);
+  } else {
+    fail("Agent binding not persisted", `got ${committedUpdate?.agentIdentityId}`);
+  }
+
+  if (committedUpdate && committedUpdate.delegationId === delegationId) {
+    pass(`ObligationUpdate.delegationId matches created delegation`);
+  } else {
+    fail("Delegation ID not persisted", `got ${committedUpdate?.delegationId}`);
   }
 
   // --- Step 4: Assert exact deltas ---
@@ -218,8 +242,16 @@ async function main() {
     fail("Obligation balance delta", `expected +$${TOOL_COST.toFixed(2)}, got +$${obligationDelta.toFixed(2)}`);
   }
 
+  // Pool summary should show agent label on the delegation
+  if (testDelegation && testDelegation.agentLabel === "auto-researcher") {
+    pass("Pool summary: delegation has agentLabel = auto-researcher");
+  } else {
+    fail("Pool summary agentLabel", `got ${testDelegation?.agentLabel}`);
+  }
+
   // --- Cleanup: revoke test delegation ---
   await del(`${BASE}/api/delegations`, { id: delegationId });
+  await prisma.$disconnect();
   const afterCleanup = await getPoolState();
 
   console.log("\nAfter state (test delegation revoked):");

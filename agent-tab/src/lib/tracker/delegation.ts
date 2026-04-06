@@ -7,7 +7,11 @@ import { verifySignature } from "@/lib/crypto";
  * into a separate tracker service later.
  */
 
-export function buildDelegationMessage(
+/**
+ * Build v1 delegation message (legacy — no agent binding).
+ * Kept for verifying old delegation auth signatures.
+ */
+export function buildDelegationMessageV1(
   debtorPubKey: string,
   sessionPubKey: string,
   scopeProviderIds: string,
@@ -16,6 +20,22 @@ export function buildDelegationMessage(
   expiresAt: string
 ): string {
   return `agentab:delegate:v1|${debtorPubKey}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toFixed(8)}|${expiresAt}`;
+}
+
+/**
+ * Build v2 delegation message (agent-bound).
+ * Includes agentIdentityId to bind the delegation to a specific agent.
+ */
+export function buildDelegationMessage(
+  debtorPubKey: string,
+  agentIdentityId: string,
+  sessionPubKey: string,
+  scopeProviderIds: string,
+  scopeToolIds: string,
+  spendCap: number,
+  expiresAt: string
+): string {
+  return `agentab:delegate:v2|${debtorPubKey}|${agentIdentityId}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toFixed(8)}|${expiresAt}`;
 }
 
 export async function verifyDelegationAuth(
@@ -33,15 +53,29 @@ export interface DelegationScope {
   spentSoFar: number;
   expiresAt: Date;
   status: string;
+  agentIdentityId?: string | null;
 }
 
+/**
+ * Check delegation scope, cap, expiry, and agent binding.
+ *
+ * Agent binding: if delegation.agentIdentityId is set, the authenticated
+ * agent must match. If null (legacy/unbound), the check passes — legacy
+ * delegations remain customer-scoped during the transition period.
+ */
 export function checkDelegationScope(
   delegation: DelegationScope,
+  authenticatedAgentId: string,
   providerId: string,
   toolId: string,
   cost: number,
   now: Date = new Date()
 ): { ok: boolean; reason?: string } {
+  // Agent binding check (first — most specific constraint)
+  if (delegation.agentIdentityId && delegation.agentIdentityId !== authenticatedAgentId) {
+    return { ok: false, reason: "Agent not bound to this delegation" };
+  }
+
   if (delegation.status !== "active") {
     return { ok: false, reason: `Delegation is ${delegation.status}` };
   }

@@ -50,10 +50,18 @@ interface PoolHealth {
   poolStatus: string;
 }
 
+interface AgentEntry {
+  id: string;
+  label: string;
+  customerId: string;
+}
+
 interface AuthorityDelegation {
   id: string;
   customerId: string;
   customerName: string;
+  agentIdentityId: string | null;
+  agentLabel: string | null;
   sessionPubKey: string;
   scopeProviders: string;
   scopeTools: string;
@@ -115,6 +123,7 @@ interface PoolSummary {
   obligations: Obligation[];
   poolHealth: PoolHealth;
   authority: Authority;
+  agents: AgentEntry[];
   tracker: TrackerBoxData[];
   settlements: SettlementData[];
 }
@@ -132,6 +141,7 @@ export default function PoolDetail() {
 
   // Delegation controls
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createAgent, setCreateAgent] = useState("");
   const [createScope, setCreateScope] = useState("*");
   const [createCap, setCreateCap] = useState("20");
   const [createDuration, setCreateDuration] = useState("7d");
@@ -240,6 +250,7 @@ export default function PoolDetail() {
 
       const authMessage = buildDelegationMessage(
         customer.publicKey,
+        createAgent,
         session.publicKey,
         createScope,
         "*",
@@ -253,6 +264,7 @@ export default function PoolDetail() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerId: customer.id,
+          agentIdentityId: createAgent,
           sessionPubKey: session.publicKey,
           scopeProviderIds: createScope,
           scopeToolIds: "*",
@@ -571,7 +583,21 @@ export default function PoolDetail() {
         {/* Create delegation form */}
         {showCreateForm && isSelfCustody && (
           <form onSubmit={createDelegation} className="border border-zinc-700 rounded-lg p-4 space-y-3 bg-zinc-900 mb-3">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
+              <div>
+                <label className="block text-sm text-zinc-400 mb-1">Agent</label>
+                <select
+                  value={createAgent}
+                  onChange={(e) => setCreateAgent(e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
+                  required
+                >
+                  <option value="">Select agent...</option>
+                  {pool.agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.label}</option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="block text-sm text-zinc-400 mb-1">Provider Scope</label>
                 <select
@@ -675,6 +701,7 @@ export default function PoolDetail() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-left text-zinc-500">
+                    <th className="px-4 py-3 font-medium">Agent</th>
                     <th className="px-4 py-3 font-medium">Session Key</th>
                     <th className="px-4 py-3 font-medium">Scope</th>
                     <th className="px-4 py-3 font-medium">Spend Cap</th>
@@ -693,6 +720,13 @@ export default function PoolDetail() {
                         key={d.id}
                         className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
                       >
+                        <td className="px-4 py-3">
+                          {d.agentLabel ? (
+                            <span className="text-zinc-300">{d.agentLabel}</span>
+                          ) : (
+                            <span className="text-zinc-600 italic">Unbound (legacy)</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 font-mono text-zinc-400">
                           {d.sessionPubKey.substring(0, 16)}...
                         </td>

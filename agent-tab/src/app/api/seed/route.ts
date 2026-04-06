@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { generateKeypair, buildCanonicalMessage, signMessage } from "@/lib/crypto";
-import { buildDelegationMessage } from "@/lib/tracker/delegation";
+import { buildDelegationMessageV1 } from "@/lib/tracker/delegation";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -271,7 +271,7 @@ export async function POST(req: NextRequest) {
   // Customer generates a session keypair and signs a delegation with their root key
   const sessionKeys = generateKeypair();
   const expiresAt = new Date(now.getTime() + 7 * 24 * 3600_000); // 7 days
-  const delegationAuthMessage = buildDelegationMessage(
+  const delegationAuthMessage = buildDelegationMessageV1(
     cust2Keys.publicKey,
     sessionKeys.publicKey,
     provider1.id, // scoped to ToolSmith AI

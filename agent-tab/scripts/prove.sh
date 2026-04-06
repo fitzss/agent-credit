@@ -75,7 +75,7 @@ if [ "$AUTHORITY_PRESENT" = true ]; then
   echo "------------------------------------------"
   npx tsx scripts/test-authority-loop.ts
   if [ $? -eq 0 ]; then
-    LOOP_RESULT="6/6"
+    LOOP_RESULT="9/9"
   else
     LOOP_RESULT="FAILED"
     ANY_FAILED=1
@@ -87,7 +87,7 @@ if [ "$AUTHORITY_PRESENT" = true ]; then
   echo "------------------------------------------"
   npx tsx scripts/test-authority-guardrails.ts
   if [ $? -eq 0 ]; then
-    GUARDRAILS_RESULT="10/10"
+    GUARDRAILS_RESULT="18/18"
   else
     GUARDRAILS_RESULT="FAILED"
     ANY_FAILED=1
@@ -117,7 +117,7 @@ fi
 
 if [ $ANY_FAILED -eq 0 ]; then
   if [ "$AUTHORITY_PRESENT" = true ]; then
-    echo "  Total: 28/28 ✓"
+    echo "  Total: 39/39 ✓"
   else
     echo "  Total: 12/12 ✓ (authority not tested)"
   fi
