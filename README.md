@@ -44,10 +44,10 @@ cd agent-tab && bash scripts/prove.sh
 | Suite | Checks | What it proves |
 |---|---|---|
 | Settlement substrate | 12 | On-chain redemption, recovery, drift, transfers, duplicates |
-| Authority loop (positive) | 6 | Create delegation → proxy call → spend cap decrements |
-| Authority guardrails (negative) | 10 | Wrong scope / expired / exceeded cap / revoked — all rejected without mutation |
+| Authority loop (positive) | 9 | Agent-bound delegation → proxy call → agent binding persisted → spend cap decrements |
+| Authority guardrails (negative) | 18 | Wrong scope / expired / exceeded cap / revoked / wrong agent / cross-delegation — all rejected without mutation |
 
-**28/28 = system verified.**
+**39/39 = system verified.**
 
 ## Repository map
 
@@ -95,12 +95,12 @@ docs/               Reviewer and operator documentation
 
 - On-chain settlement with Schnorr + AVL proofs
 - Single-pool operator dashboard (`/pool/[id]`): reserve health, obligation readiness, tracker state, settlement history
-- Bounded delegated authority: create/revoke delegations with scope, spend cap, expiry
-- Authority visibility: compliance badges, utilization bars, authority mode
+- Agent-bound delegated authority: delegations bind to specific agents with scope, spend cap, expiry
+- Authority visibility: compliance badges, utilization bars, agent labels, authority mode
 - Novation (debt transfer between creditors)
 - Pending recovery, drift detection, contract versioning
 - Isolated private testnet with reproducible demo fixture
-- 28-check proof stack covering positive and negative paths
+- 39-check proof stack covering positive paths, negative paths, and agent-binding enforcement
 
 ## Quick start
 

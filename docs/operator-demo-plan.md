@@ -146,10 +146,10 @@ cd agent-tab && bash scripts/prove.sh
 | Suite | Layer | Checks | What it proves |
 |---|---|---|---|
 | `validate.sh` | Settlement substrate | 12 | Redemption, recovery, drift detection, transfer guardrails, duplicate blocking, contract versioning |
-| `test-authority-loop.ts` | Positive authority | 6 | Create delegation → proxy call with session key → session signing → spend cap decrements → pool dashboard reflects |
-| `test-authority-guardrails.ts` | Negative authority | 10 | Wrong scope, expired, exceeded cap, and revoked delegations all rejected without mutating commercial state |
+| `test-authority-loop.ts` | Positive authority | 9 | Agent-bound delegation creation → proxy call → session signing → agent binding persisted → spend cap decrements → pool dashboard reflects |
+| `test-authority-guardrails.ts` | Negative authority | 18 | Wrong scope, expired, exceeded cap, revoked, wrong agent, foreign agent, cross-delegation commit — all rejected without mutation. Legacy backward compat proven. |
 
-**28/28 = system verified.** If any suite fails, do not demo.
+**39/39 = system verified.** If any suite fails, do not demo.
 
 Authority tests require the authority-demo fixture:
 ```bash
