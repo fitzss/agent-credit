@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { tracker, TrackerError } from "@/lib/tracker/service";
+import { validateTrustSignal, TrustSignalError } from "@/lib/adapters/trust-signal";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -56,6 +57,29 @@ export async function POST(req: NextRequest) {
     : await prisma.customer.findFirst({ where: { publicKey: debtorPubKey } });
   if (!customer || agent.customerId !== customer.id) {
     return NextResponse.json({ error: "Agent does not belong to this customer" }, { status: 400 });
+  }
+
+  // Trust-signal gate (v0): optional partner-issued eligibility signal.
+  // Both fields must be supplied together or both omitted. Signal is opaque
+  // to the route — the helper does binary validation via static dispatch.
+  const trustSignalIssuer = body.trustSignalIssuer;
+  const trustSignal = body.trustSignal;
+  if ((trustSignalIssuer && !trustSignal) || (!trustSignalIssuer && trustSignal)) {
+    return NextResponse.json(
+      { error: "trustSignalIssuer and trustSignal must be supplied together", code: "MALFORMED_REQUEST" },
+      { status: 400 }
+    );
+  }
+  if (trustSignalIssuer && trustSignal) {
+    try {
+      await validateTrustSignal(trustSignalIssuer, trustSignal);
+    } catch (e) {
+      if (e instanceof TrustSignalError) {
+        const status = e.code === "INVALID_SIGNAL" ? 403 : 400;
+        return NextResponse.json({ error: e.message, code: e.code }, { status });
+      }
+      throw e;
+    }
   }
 
   try {

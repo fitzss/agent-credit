@@ -99,6 +99,19 @@ else
   GUARDRAILS_RESULT="skipped"
 fi
 
+# --- Suite 4: Trust-signal gate (always runs, no fixture needed) ---
+echo "------------------------------------------"
+echo "  Suite 4: Trust-Signal Gate (v0)"
+echo "------------------------------------------"
+npx tsx scripts/test-trust-signal-gate.ts
+if [ $? -eq 0 ]; then
+  TRUST_SIGNAL_RESULT="10/10"
+else
+  TRUST_SIGNAL_RESULT="FAILED"
+  ANY_FAILED=1
+fi
+echo ""
+
 # --- Summary ---
 echo "=========================================="
 echo "  Proof Stack Summary"
@@ -107,6 +120,7 @@ echo ""
 echo "  Settlement substrate:    $SETTLEMENT_RESULT"
 echo "  Authority loop:          $LOOP_RESULT"
 echo "  Authority guardrails:    $GUARDRAILS_RESULT"
+echo "  Trust-signal gate:       $TRUST_SIGNAL_RESULT"
 echo ""
 
 if [ "$AUTHORITY_PRESENT" = false ]; then
@@ -117,9 +131,9 @@ fi
 
 if [ $ANY_FAILED -eq 0 ]; then
   if [ "$AUTHORITY_PRESENT" = true ]; then
-    echo "  Total: 39/39 ✓"
+    echo "  Total: 49/49 ✓"
   else
-    echo "  Total: 12/12 ✓ (authority not tested)"
+    echo "  Total: 22/22 ✓ (authority not tested)"
   fi
 else
   echo "  SOME SUITES FAILED"
