@@ -56,3 +56,5 @@ The chain execution sidecar. Handles everything that touches Ergo directly.
 | `fixture-reuse-note.md` | Operator | Persistence, drift, restore procedures |
 | `glossary.md` | Both | Key terms defined |
 | `repo-map.md` | Both | This file |
+| `partners/v1-integration-rulebook.md` | Internal | v1 Core vs Adapter vs Partner Fixture rulebook |
+| `partners/_template.md` | Internal | Partner integration scoping template (gate before any partner code) |
