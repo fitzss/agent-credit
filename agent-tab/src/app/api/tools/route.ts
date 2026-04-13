@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseCredits } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
       name: body.name,
       description: body.description || "",
       endpoint: body.endpoint,
-      costPerCall: body.costPerCall,
+      costPerCall: parseCredits(String(body.costPerCall)),
     },
   });
   return NextResponse.json(tool, { status: 201 });

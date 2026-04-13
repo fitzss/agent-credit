@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatCredits } from "@/lib/credits";
 
 interface Provider {
   id: string;
   name: string;
   publicKey: string;
   status: string;
-  obligationStates: { currentAmount: number }[];
-  creditLines: { limitAmount: number; customerId: string }[];
+  obligationStates: { currentAmount: bigint }[];
+  creditLines: { limitAmount: bigint; customerId: string }[];
 }
 
 interface Customer {
@@ -17,8 +18,8 @@ interface Customer {
   name: string;
   publicKey: string;
   contactEmail: string | null;
-  obligationStates: { currentAmount: number; providerId: string }[];
-  creditLines: { limitAmount: number; providerId: string }[];
+  obligationStates: { currentAmount: bigint; providerId: string }[];
+  creditLines: { limitAmount: bigint; providerId: string }[];
 }
 
 export default function Home() {
@@ -76,12 +77,12 @@ export default function Home() {
   };
 
   const totalReceivables = providers.reduce(
-    (sum, p) => sum + p.obligationStates.reduce((s, o) => s + o.currentAmount, 0),
-    0
+    (sum, p) => sum + p.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0)),
+    BigInt(0)
   );
   const totalPayables = customers.reduce(
-    (sum, c) => sum + c.obligationStates.reduce((s, o) => s + o.currentAmount, 0),
-    0
+    (sum, c) => sum + c.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0)),
+    BigInt(0)
   );
 
   const empty = loaded && providers.length === 0 && customers.length === 0;
@@ -112,8 +113,8 @@ export default function Home() {
       {(providers.length > 0 || customers.length > 0) && (
         <div className="grid grid-cols-3 gap-4">
           <Card label="Providers" value={providers.length.toString()} />
-          <Card label="Total Receivables" value={`$${totalReceivables.toFixed(2)}`} />
-          <Card label="Total Payables" value={`$${totalPayables.toFixed(2)}`} />
+          <Card label="Total Receivables" value={`$${formatCredits(totalReceivables)}`} />
+          <Card label="Total Payables" value={`$${formatCredits(totalPayables)}`} />
         </div>
       )}
 
@@ -152,7 +153,7 @@ export default function Home() {
           </form>
         )}
         {providers.map((p) => {
-          const receivables = p.obligationStates.reduce((s, o) => s + o.currentAmount, 0);
+          const receivables = p.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0));
           return (
             <Link
               key={p.id}
@@ -170,7 +171,7 @@ export default function Home() {
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-lg font-mono">${receivables.toFixed(2)}</p>
+                  <p className="text-lg font-mono">${formatCredits(receivables)}</p>
                   <p className="text-xs text-zinc-500">receivables</p>
                 </div>
               </div>
@@ -224,8 +225,8 @@ export default function Home() {
           </form>
         )}
         {customers.map((c) => {
-          const owed = c.obligationStates.reduce((s, o) => s + o.currentAmount, 0);
-          const totalLimit = c.creditLines.reduce((s, l) => s + l.limitAmount, 0);
+          const owed = c.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0));
+          const totalLimit = c.creditLines.reduce((s, l) => s + BigInt(l.limitAmount), BigInt(0));
           return (
             <Link
               key={c.id}
@@ -242,7 +243,7 @@ export default function Home() {
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-mono">
-                    ${owed.toFixed(2)} <span className="text-zinc-500 text-sm">/ ${totalLimit.toFixed(2)}</span>
+                    ${formatCredits(owed)} <span className="text-zinc-500 text-sm">/ ${formatCredits(totalLimit)}</span>
                   </p>
                   <p className="text-xs text-zinc-500">balance / limit</p>
                 </div>

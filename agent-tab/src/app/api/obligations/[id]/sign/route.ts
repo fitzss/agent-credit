@@ -32,8 +32,8 @@ export async function POST(
       verified: result.verified,
       delegated: result.delegated,
       obligation: {
-        currentAmount: result.currentAmount,
-        pendingAmount: result.pendingAmount,
+        currentAmount: result.currentAmount.toString(),
+        pendingAmount: result.pendingAmount.toString(),
       },
     });
   } catch (e) {

@@ -1,8 +1,7 @@
 import { prisma } from "@/lib/prisma";
+import { parseCredits, nanoCreditsToNanoErg } from "@/lib/credits";
 import { computeCumulativeTrackerDebt } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
-
-const NANO_PER_CREDIT = 1_000_000_000;
 
 /**
  * POST /api/debt/transfer
@@ -34,7 +33,17 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Guardrail 1: Positive amount ---
-  if (amountCredits <= 0) {
+  const amountStr = String(amountCredits);
+  if (amountStr.startsWith("-") || amountStr === "0") {
+    return NextResponse.json({ error: "Transfer amount must be positive" }, { status: 400 });
+  }
+  let amountNanoCredits: bigint;
+  try {
+    amountNanoCredits = parseCredits(amountStr);
+  } catch {
+    return NextResponse.json({ error: "Invalid amount format" }, { status: 400 });
+  }
+  if (amountNanoCredits <= BigInt(0)) {
     return NextResponse.json({ error: "Transfer amount must be positive" }, { status: 400 });
   }
 
@@ -65,11 +74,11 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Guardrail 3: Sufficient source amount ---
-  if (fromOb.currentAmount < amountCredits - 0.000001) {
+  if (fromOb.currentAmount < amountNanoCredits) {
     return NextResponse.json({
       error: "Source obligation has insufficient debt for this transfer",
-      sourceCurrentAmount: fromOb.currentAmount,
-      transferAmount: amountCredits,
+      sourceCurrentAmount: fromOb.currentAmount.toString(),
+      transferAmount: amountNanoCredits.toString(),
     }, { status: 409 });
   }
 
@@ -95,14 +104,9 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Guardrail 5: Redeemed-floor constraint ---
-  // After transfer, the source pair's cumulative totalDebt must remain >= previouslyRedeemed.
-  // totalDebt = previouslyRedeemed + currentAmount. After transfer: currentAmount decreases.
-  // New totalDebt = previouslyRedeemed + (currentAmount - amountCredits).
-  // Constraint: new totalDebt >= previouslyRedeemed → currentAmount - amountCredits >= 0.
-  // This is already covered by guardrail 3. But let's check explicitly in nanoERG to be precise.
-  const amountNanoErg = Math.round(amountCredits * NANO_PER_CREDIT);
-  const newSourceAmount = fromOb.currentAmount - amountCredits;
-  const newSourceAmountNanoErg = Math.round(newSourceAmount * NANO_PER_CREDIT);
+  const amountNanoErg = nanoCreditsToNanoErg(amountNanoCredits);
+  const newSourceAmount = fromOb.currentAmount - amountNanoCredits;
+  const newSourceAmountNanoErg = nanoCreditsToNanoErg(newSourceAmount);
 
   const { previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(
     fromOb.customerId,
@@ -114,24 +118,23 @@ export async function POST(req: NextRequest) {
   // Post-transfer totalDebt for source pair
   const postTransferTotalDebt = previouslyRedeemedNanoErg + newSourceAmountNanoErg;
   if (postTransferTotalDebt < previouslyRedeemedNanoErg) {
-    // This shouldn't happen if newSourceAmountNanoErg >= 0, but check explicitly
     return NextResponse.json({
       error: "Transfer would make source pair's totalDebt fall below already-redeemed amount",
-      previouslyRedeemedNanoErg,
-      postTransferTotalDebtNanoErg: postTransferTotalDebt,
+      previouslyRedeemedNanoErg: previouslyRedeemedNanoErg.toString(),
+      postTransferTotalDebtNanoErg: postTransferTotalDebt.toString(),
     }, { status: 409 });
   }
 
   // --- Execute atomically ---
-  const newFromAmount = Math.max(0, fromOb.currentAmount - amountCredits);
-  const newToAmount = toOb.currentAmount + amountCredits;
+  const newFromAmount = newSourceAmount < BigInt(0) ? BigInt(0) : newSourceAmount;
+  const newToAmount = toOb.currentAmount + amountNanoCredits;
 
   const [updatedFrom, updatedTo, transfer] = await prisma.$transaction([
     prisma.obligationState.update({
       where: { id: fromObligationId },
       data: {
         currentAmount: newFromAmount,
-        settlementStatus: newFromAmount <= 0 ? "settled" : "current",
+        settlementStatus: newFromAmount <= BigInt(0) ? "settled" : "current",
       },
     }),
     prisma.obligationState.update({
@@ -145,8 +148,8 @@ export async function POST(req: NextRequest) {
       data: {
         fromObligationId,
         toObligationId,
-        amountCredits,
-        amountNanoErg: BigInt(amountNanoErg),
+        amountCredits: amountNanoCredits,
+        amountNanoErg,
         debtorPubKey: fromOb.debtorPubKey,
         fromCreditorPubKey: fromOb.creditorPubKey,
         toCreditorPubKey: toOb.creditorPubKey,
@@ -158,7 +161,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     transfer: {
       id: transfer.id,
-      amountCredits: transfer.amountCredits,
+      amountCredits: transfer.amountCredits.toString(),
       amountNanoErg: transfer.amountNanoErg.toString(),
       fromCreditorPubKey: transfer.fromCreditorPubKey.substring(0, 16) + "...",
       toCreditorPubKey: transfer.toCreditorPubKey.substring(0, 16) + "...",
@@ -166,12 +169,12 @@ export async function POST(req: NextRequest) {
     },
     fromObligation: {
       id: updatedFrom.id,
-      currentAmount: updatedFrom.currentAmount,
+      currentAmount: updatedFrom.currentAmount.toString(),
       settlementStatus: updatedFrom.settlementStatus,
     },
     toObligation: {
       id: updatedTo.id,
-      currentAmount: updatedTo.currentAmount,
+      currentAmount: updatedTo.currentAmount.toString(),
       settlementStatus: updatedTo.settlementStatus,
     },
     note: "Tracker will auto-update on next redemption for either pair.",

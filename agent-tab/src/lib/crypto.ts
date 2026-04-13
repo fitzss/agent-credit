@@ -48,11 +48,11 @@ export function generateKeypair(): { publicKey: string; privateKey: string } {
 export function buildCanonicalMessage(
   debtorPubKey: string,
   creditorPubKey: string,
-  cumulativeAmount: number,
+  cumulativeAmount: bigint,
   version: number,
   timestamp: string
 ): string {
-  const amount = cumulativeAmount.toFixed(8);
+  const amount = cumulativeAmount.toString();
   return `agentab:v1|${debtorPubKey}|${creditorPubKey}|${amount}|${version}|${timestamp}`;
 }
 

@@ -3,19 +3,20 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { formatCredits } from "@/lib/credits";
 
 interface Tool {
   id: string;
   name: string;
   description: string;
-  costPerCall: number;
+  costPerCall: string;
   status: string;
 }
 
 interface CreditLine {
   id: string;
   customerId: string;
-  limitAmount: number;
+  limitAmount: string;
   alertThreshold: number;
   status: string;
   customer: { id: string; name: string };
@@ -24,7 +25,7 @@ interface CreditLine {
 interface Obligation {
   id: string;
   customerId: string;
-  currentAmount: number;
+  currentAmount: string;
   version: number;
   settlementStatus: string;
   latestSignature: string | null;
@@ -33,7 +34,7 @@ interface Obligation {
 
 interface UsageEvent {
   id: string;
-  amountCharged: number;
+  amountCharged: string;
   timestamp: string;
   outcome: string;
   tool: { name: string };
@@ -96,7 +97,7 @@ export default function ProviderDashboard() {
       body: JSON.stringify({
         providerId: id,
         customerId: creditCustomerId,
-        limitAmount: parseFloat(creditLimit),
+        limitAmount: creditLimit,
       }),
     });
     setCreditCustomerId("");
@@ -116,7 +117,7 @@ export default function ProviderDashboard() {
         name: toolName,
         description: toolDesc,
         endpoint: toolEndpoint,
-        costPerCall: parseFloat(toolCost),
+        costPerCall: toolCost,
       }),
     });
     setToolName("");
@@ -139,8 +140,8 @@ export default function ProviderDashboard() {
 
   if (!provider) return <div className="text-zinc-500">Loading...</div>;
 
-  const totalReceivables = provider.obligationStates.reduce((s, o) => s + o.currentAmount, 0);
-  const totalExposure = provider.creditLines.reduce((s, l) => s + l.limitAmount, 0);
+  const totalReceivables = provider.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0));
+  const totalExposure = provider.creditLines.reduce((s, l) => s + BigInt(l.limitAmount), BigInt(0));
 
   // Customers not yet given a credit line
   const existingCustomerIds = new Set(provider.creditLines.map((l) => l.customerId));
@@ -159,8 +160,8 @@ export default function ProviderDashboard() {
 
       {/* Summary */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Total Receivables" value={`$${totalReceivables.toFixed(2)}`} />
-        <StatCard label="Total Exposure" value={`$${totalExposure.toFixed(2)}`} />
+        <StatCard label="Total Receivables" value={`$${formatCredits(totalReceivables)}`} />
+        <StatCard label="Total Exposure" value={`$${formatCredits(totalExposure)}`} />
         <StatCard label="Active Lines" value={provider.creditLines.filter((l) => l.status === "active").length.toString()} />
         <StatCard label="Tools" value={provider.tools.length.toString()} />
       </div>
@@ -231,8 +232,9 @@ export default function ProviderDashboard() {
             <tbody className="divide-y divide-zinc-800">
               {provider.creditLines.map((line) => {
                 const obl = provider.obligationStates.find((o) => o.customerId === line.customerId);
-                const balance = obl?.currentAmount ?? 0;
-                const util = line.limitAmount > 0 ? balance / line.limitAmount : 0;
+                const balance = BigInt(obl?.currentAmount ?? "0");
+                const limitBig = BigInt(line.limitAmount);
+                const util = limitBig > BigInt(0) ? Number(balance) / Number(limitBig) : 0;
                 const utilColor = util >= 0.9 ? "text-red-400" : util >= 0.7 ? "text-yellow-400" : "text-green-400";
                 return (
                   <tr key={line.id} className="hover:bg-zinc-900/50">
@@ -241,8 +243,8 @@ export default function ProviderDashboard() {
                         {line.customer.name}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-right font-mono">${line.limitAmount.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right font-mono">${balance.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono">${formatCredits(limitBig)}</td>
+                    <td className="px-4 py-3 text-right font-mono">${formatCredits(balance)}</td>
                     <td className={`px-4 py-3 text-right font-mono ${utilColor}`}>
                       {(util * 100).toFixed(0)}%
                     </td>
@@ -360,7 +362,7 @@ export default function ProviderDashboard() {
                   <p className="text-xs text-zinc-600 font-mono mt-2">{tool.id}</p>
                 </div>
                 <span className="font-mono text-sm bg-zinc-800 px-2 py-1 rounded">
-                  ${tool.costPerCall.toFixed(2)}/call
+                  ${formatCredits(BigInt(tool.costPerCall))}/call
                 </span>
               </div>
             </div>
@@ -390,7 +392,7 @@ export default function ProviderDashboard() {
                   </td>
                   <td className="px-4 py-3">{e.agentIdentity.label}</td>
                   <td className="px-4 py-3">{e.tool.name}</td>
-                  <td className="px-4 py-3 text-right font-mono">${e.amountCharged.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-mono">${formatCredits(BigInt(e.amountCharged))}</td>
                   <td className="px-4 py-3 text-center">
                     <StatusBadge status={e.outcome} />
                   </td>

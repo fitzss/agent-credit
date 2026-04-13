@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseCredits } from "@/lib/credits";
 import { tracker, TrackerError } from "@/lib/tracker/service";
 import { validateTrustSignal, TrustSignalError } from "@/lib/adapters/trust-signal";
 import { NextRequest, NextResponse } from "next/server";
@@ -89,7 +90,7 @@ export async function POST(req: NextRequest) {
       sessionPubKey: body.sessionPubKey,
       scopeProviderIds: body.scopeProviderIds || "*",
       scopeToolIds: body.scopeToolIds || "*",
-      spendCap: body.spendCap,
+      spendCap: parseCredits(String(body.spendCap)),
       expiresAt: body.expiresAt,
       authSignature: body.authSignature,
     });

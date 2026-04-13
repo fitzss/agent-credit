@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { generateKeypair, signMessage } from "@/lib/crypto";
 import { buildDelegationMessage } from "@/lib/tracker/delegation";
+import { formatCredits, parseCredits } from "@/lib/credits";
 
 /**
  * Single pool detail view — scoped to one reserve.
@@ -31,13 +32,13 @@ interface Obligation {
   providerName: string;
   customerId: string;
   customerName: string;
-  currentAmount: number;
+  currentAmount: string;
   version: number;
   settlementStatus: string;
   debtorPubKey: string;
   creditorPubKey: string;
   latestSignature: string | null;
-  creditLimit: number | null;
+  creditLimit: string | null;
   alertThreshold: number | null;
   reserveId: string | null;
   settlementReadiness: string;
@@ -45,7 +46,7 @@ interface Obligation {
 
 interface PoolHealth {
   totalReserveValueNanoErg: string;
-  totalObligationsCredits: number;
+  totalObligationsNanoCredits: string;
   coverageRatio: number | null;
   poolStatus: string;
 }
@@ -65,8 +66,8 @@ interface AuthorityDelegation {
   sessionPubKey: string;
   scopeProviders: string;
   scopeTools: string;
-  spendCap: number;
-  spentSoFar: number;
+  spendCap: string;
+  spentSoFar: string;
   utilization: number;
   expiresAt: string;
   timeRemainingMs: number;
@@ -111,7 +112,7 @@ interface SettlementData {
   id: string;
   obligationStateId: string;
   providerName: string;
-  amount: number;
+  amount: string;
   method: string;
   status: string;
   redemptionTxId: string | null;
@@ -241,7 +242,7 @@ export default function PoolDetail() {
     setCreateResult(null);
     try {
       const session = generateKeypair();
-      const cap = parseFloat(createCap);
+      const cap = parseCredits(createCap);
       const durationMs =
         createDuration === "24h" ? 24 * 3600_000
         : createDuration === "7d" ? 7 * 24 * 3600_000
@@ -307,8 +308,7 @@ export default function PoolDetail() {
   const reserve = reserves[0];
   const isSelfCustody = reserve?.customer.signingMode === "self-custody";
   const poolName = reserve ? `${reserve.customer.name} Pool` : "Pool";
-  const reserveValueErg =
-    Number(BigInt(poolHealth.totalReserveValueNanoErg)) / 1e9;
+  const reserveValueDisplay = formatCredits(BigInt(poolHealth.totalReserveValueNanoErg));
   const coverageDisplay =
     poolHealth.coverageRatio === null
       ? "∞"
@@ -332,10 +332,10 @@ export default function PoolDetail() {
 
       {/* Pool Health Banner */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Reserve Value" value={`${reserveValueErg.toFixed(2)} ERG`} />
+        <StatCard label="Reserve Value" value={`${reserveValueDisplay} ERG`} />
         <StatCard
           label="Total Obligations"
-          value={`${poolHealth.totalObligationsCredits.toFixed(2)} credits`}
+          value={`${formatCredits(BigInt(poolHealth.totalObligationsNanoCredits))} credits`}
         />
         <StatCard label="Coverage" value={coverageDisplay} />
         <div className="border border-zinc-800 rounded-lg p-4">
@@ -367,7 +367,7 @@ export default function PoolDetail() {
             <div>
               <p className="text-zinc-500">Value</p>
               <p className="font-mono">
-                {(Number(BigInt(reserve.valueNanoErg)) / 1e9).toFixed(2)} ERG
+                {formatCredits(BigInt(reserve.valueNanoErg))} ERG
               </p>
             </div>
             <div>
@@ -438,9 +438,11 @@ export default function PoolDetail() {
                 </tr>
               ) : (
                 obligations.map((o) => {
+                  const currentAmountBig = BigInt(o.currentAmount);
+                  const creditLimitBig = o.creditLimit ? BigInt(o.creditLimit) : BigInt(0);
                   const utilization =
-                    o.creditLimit && o.creditLimit > 0
-                      ? (o.currentAmount / o.creditLimit) * 100
+                    creditLimitBig > BigInt(0)
+                      ? (Number(currentAmountBig) / Number(creditLimitBig)) * 100
                       : 0;
                   const isRedeeming = redeemingId === o.id;
 
@@ -458,13 +460,13 @@ export default function PoolDetail() {
                         </Link>
                       </td>
                       <td className="px-4 py-3 font-mono">
-                        {o.currentAmount.toFixed(2)}
+                        {formatCredits(currentAmountBig)}
                       </td>
                       <td className="px-4 py-3 font-mono text-zinc-400">
-                        {o.creditLimit !== null ? o.creditLimit.toFixed(2) : "—"}
+                        {o.creditLimit !== null ? formatCredits(creditLimitBig) : "—"}
                       </td>
                       <td className="px-4 py-3">
-                        {o.creditLimit !== null && o.creditLimit > 0 ? (
+                        {o.creditLimit !== null && creditLimitBig > BigInt(0) ? (
                           <div className="flex items-center gap-2">
                             <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                               <div
@@ -738,8 +740,8 @@ export default function PoolDetail() {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3 font-mono">${d.spendCap.toFixed(2)}</td>
-                        <td className="px-4 py-3 font-mono">${d.spentSoFar.toFixed(2)}</td>
+                        <td className="px-4 py-3 font-mono">${formatCredits(BigInt(d.spendCap))}</td>
+                        <td className="px-4 py-3 font-mono">${formatCredits(BigInt(d.spentSoFar))}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
@@ -845,7 +847,7 @@ export default function PoolDetail() {
                         <tr key={e.id} className="border-b border-zinc-800/30">
                           <td className="px-4 py-2 text-zinc-300">{e.creditorName}</td>
                           <td className="px-4 py-2 font-mono">
-                            {(Number(BigInt(e.totalDebtNanoErg)) / 1e9).toFixed(4)} ERG
+                            {formatCredits(BigInt(e.totalDebtNanoErg))} ERG
                           </td>
                         </tr>
                       ))}
@@ -889,7 +891,7 @@ export default function PoolDetail() {
                     className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors"
                   >
                     <td className="px-4 py-3 text-zinc-300">{s.providerName}</td>
-                    <td className="px-4 py-3 font-mono">{s.amount.toFixed(2)}</td>
+                    <td className="px-4 py-3 font-mono">{formatCredits(BigInt(s.amount))}</td>
                     <td className="px-4 py-3">
                       <MethodBadge method={s.method} />
                     </td>

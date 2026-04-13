@@ -23,19 +23,14 @@ import {
 // --- Constants ---
 const PENDING_TTL_MS = 15 * 60 * 1000; // 15 minutes — pending updates expire after this
 
-/**
- * Denomination: 1 credit = 1 ERG = 1,000,000,000 nanoERG.
- * Used for converting between Agent Tab credit amounts and on-chain nanoERG values.
- * This is the defined exchange rate for the first redeemable implementation.
- */
-export const NANOERG_PER_CREDIT = 1_000_000_000;
+import { NANOCREDITS_PER_CREDIT, nanoCreditsToNanoErg } from "@/lib/credits";
 
 // --- Types ---
 
 export interface ProposeInput {
   debtorPubKey: string;
   creditorPubKey: string;
-  delta: number;
+  delta: bigint;
   expectedVersion: number; // optimistic concurrency — must match current version
   requestId: string; // idempotency key
   sessionPubKey?: string; // for delegated signing
@@ -53,10 +48,10 @@ export interface ProposeOutput {
   updateId: string;
   version: number;
   canonicalMessage: string;
-  previousAmount: number;
-  newAmount: number;
-  currentAmount: number;
-  pendingAmount: number;
+  previousAmount: bigint;
+  newAmount: bigint;
+  currentAmount: bigint;
+  pendingAmount: bigint;
   delegationId: string | null;
 }
 
@@ -70,8 +65,8 @@ export interface CommitInput {
 export interface CommitOutput {
   noteId: string;
   version: number;
-  currentAmount: number;
-  pendingAmount: number;
+  currentAmount: bigint;
+  pendingAmount: bigint;
   verified: boolean;
   delegated: boolean;
 }
@@ -80,8 +75,8 @@ export interface NoteProof {
   noteId: string;
   debtorPubKey: string;
   creditorPubKey: string;
-  currentAmount: number;
-  pendingAmount: number;
+  currentAmount: bigint;
+  pendingAmount: bigint;
   version: number;
   lastUpdatedAt: Date;
   canonicalMessage: string | null;
@@ -91,8 +86,8 @@ export interface NoteProof {
   delegation: {
     delegationId: string;
     sessionPubKey: string;
-    spendCap: number;
-    spentSoFar: number;
+    spendCap: bigint;
+    spentSoFar: bigint;
     expiresAt: Date;
     delegationAuthVerified: boolean;
   } | null;
@@ -110,15 +105,15 @@ export interface NoteProof {
 
 export interface KeyStatus {
   publicKey: string;
-  totalCommittedDebt: number;
-  totalPendingDebt: number;
+  totalCommittedDebt: bigint;
+  totalPendingDebt: bigint;
   noteCount: number;
   delegationCount: number;
   activeDelegations: number;
   // Reserve integration placeholders
-  totalReserveValue: number | null;
+  totalReserveValue: bigint | null;
   collateralizationRatio: number | null;
-  notes: { noteId: string; creditorPubKey: string; currentAmount: number; pendingAmount: number; version: number }[];
+  notes: { noteId: string; creditorPubKey: string; currentAmount: bigint; pendingAmount: bigint; version: number }[];
 }
 
 // --- Service ---
@@ -143,8 +138,8 @@ export class TrackerService {
         canonicalMessage: existing.canonicalMessage,
         previousAmount: existing.previousAmount,
         newAmount: existing.newAmount,
-        currentAmount: note?.currentAmount ?? 0,
-        pendingAmount: note?.pendingAmount ?? 0,
+        currentAmount: note?.currentAmount ?? BigInt(0),
+        pendingAmount: note?.pendingAmount ?? BigInt(0),
         delegationId: existing.delegationId,
       };
     }
@@ -165,8 +160,8 @@ export class TrackerService {
     }
 
     const newVersion = currentVersion + 1;
-    const currentAmount = note?.currentAmount ?? 0;
-    const pendingAmount = note?.pendingAmount ?? 0;
+    const currentAmount = note?.currentAmount ?? BigInt(0);
+    const pendingAmount = note?.pendingAmount ?? BigInt(0);
     const newProposedTotal = currentAmount + pendingAmount + input.delta;
     const timestamp = new Date().toISOString();
 
@@ -224,7 +219,7 @@ export class TrackerService {
             debtorPubKey: input.debtorPubKey,
             creditorPubKey: input.creditorPubKey,
             currentAmount: input.delta,
-            pendingAmount: 0,
+            pendingAmount: BigInt(0),
             version: newVersion,
             latestSignedMessage: canonicalMessage,
             latestSignature: signature,
@@ -255,7 +250,7 @@ export class TrackerService {
           canonicalMessage,
           signature,
           signatureStatus: "signed",
-          type: input.delta >= 0 ? "charge" : "settlement",
+          type: input.delta >= BigInt(0) ? "charge" : "settlement",
           nonce: input.requestId,
         },
       });
@@ -281,7 +276,7 @@ export class TrackerService {
           customerId: input.customerId ?? "",
           debtorPubKey: input.debtorPubKey,
           creditorPubKey: input.creditorPubKey,
-          currentAmount: 0,
+          currentAmount: BigInt(0),
           pendingAmount: input.delta,
           version: newVersion,
         },
@@ -309,7 +304,7 @@ export class TrackerService {
         canonicalMessage,
         signature: "",
         signatureStatus: "pending",
-        type: input.delta >= 0 ? "charge" : "settlement",
+        type: input.delta >= BigInt(0) ? "charge" : "settlement",
         nonce: input.requestId,
       },
     });
@@ -346,8 +341,8 @@ export class TrackerService {
       return {
         noteId: input.noteId,
         version: update.version,
-        currentAmount: note?.currentAmount ?? 0,
-        pendingAmount: note?.pendingAmount ?? 0,
+        currentAmount: note?.currentAmount ?? BigInt(0),
+        pendingAmount: note?.pendingAmount ?? BigInt(0),
         verified: true,
         delegated: !!input.delegationId,
       };
@@ -587,23 +582,23 @@ export class TrackerService {
       where: { debtorPubKey: pubKey, lifecycle: "active" },
     });
 
-    const totalDebt = notes.reduce((s, n) => s + n.currentAmount, 0);
-    const totalReserveNanoErg = reserves.reduce((s, r) => s + Number(r.valueNanoErg), 0);
-    // Convert nanoERG to credits using defined denomination (1 credit = 1 ERG)
-    const totalReserveCredits = totalReserveNanoErg > 0 ? totalReserveNanoErg / NANOERG_PER_CREDIT : null;
-    const collateralizationRatio = totalDebt > 0 && totalReserveCredits !== null
-      ? totalReserveCredits / totalDebt
+    const totalDebt = notes.reduce((s, n) => s + n.currentAmount, BigInt(0));
+    const totalReserveNanoErg = reserves.reduce((s, r) => s + r.valueNanoErg, BigInt(0));
+    // v1: nanoCredits = nanoERG (identity). Reserve value in nanoCredits.
+    const totalReserveNanoCredits = totalReserveNanoErg > BigInt(0) ? totalReserveNanoErg : null;
+    const collateralizationRatio = totalDebt > BigInt(0) && totalReserveNanoCredits !== null
+      ? Number(totalReserveNanoCredits) / Number(totalDebt)
       : null;
 
     return {
       publicKey: pubKey,
       totalCommittedDebt: totalDebt,
-      totalPendingDebt: notes.reduce((s, n) => s + n.pendingAmount, 0),
+      totalPendingDebt: notes.reduce((s, n) => s + n.pendingAmount, BigInt(0)),
       noteCount: notes.length,
       delegationCount: delegations.length,
       activeDelegations: delegations.filter((d) => d.status === "active").length,
       // Reserve status — tracker-side estimate based on last known on-chain state
-      totalReserveValue: totalReserveCredits,
+      totalReserveValue: totalReserveNanoCredits,
       collateralizationRatio,
       notes: notes.map((n) => ({
         noteId: n.id,
@@ -624,7 +619,7 @@ export class TrackerService {
     sessionPubKey: string;
     scopeProviderIds: string;
     scopeToolIds: string;
-    spendCap: number;
+    spendCap: bigint;
     expiresAt: string;
     authSignature: string;
   }) {
@@ -716,7 +711,7 @@ export class TrackerService {
    */
   private async getReserveForKey(
     debtorPubKey: string,
-    noteAmount: number
+    noteAmount: bigint
   ): Promise<NoteProof["reserve"]> {
     const reserve = await prisma.reserve.findFirst({
       where: { debtorPubKey, lifecycle: "active" },
@@ -732,16 +727,16 @@ export class TrackerService {
       };
     }
 
-    const reserveCredits = Number(reserve.valueNanoErg) / 1_000_000_000;
+    // v1: nanoCredits = nanoERG
     return {
       reserveId: reserve.reserveTokenId,
-      collateralizationRatio: noteAmount > 0 ? reserveCredits / noteAmount : null,
+      collateralizationRatio: noteAmount > BigInt(0) ? Number(reserve.valueNanoErg) / Number(noteAmount) : null,
       latestDigest: reserve.avlTreeDigest ?? null,
       commitmentRef: reserve.boxId ?? null,
     };
   }
 
-  private async expirePendingUpdate(updateId: string, noteId: string, delta: number) {
+  private async expirePendingUpdate(updateId: string, noteId: string, delta: bigint) {
     await prisma.$transaction([
       prisma.obligationUpdate.update({
         where: { id: updateId },

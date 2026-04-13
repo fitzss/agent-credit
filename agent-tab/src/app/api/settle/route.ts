@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseCredits } from "@/lib/credits";
 import { tracker, TrackerError } from "@/lib/tracker/service";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
@@ -14,6 +15,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing providerId, customerId, or amount" }, { status: 400 });
   }
 
+  const parsedAmount = parseCredits(String(amount));
+
   const obligation = await prisma.obligationState.findUnique({
     where: { providerId_customerId: { providerId, customerId } },
   });
@@ -21,8 +24,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No obligation found" }, { status: 404 });
   }
 
-  const settleAmount = Math.min(amount, obligation.currentAmount);
-  if (settleAmount <= 0) {
+  const settleAmount = parsedAmount < obligation.currentAmount ? parsedAmount : obligation.currentAmount;
+  if (settleAmount <= BigInt(0)) {
     return NextResponse.json({ error: "Nothing to settle" }, { status: 400 });
   }
 
@@ -35,11 +38,12 @@ export async function POST(req: NextRequest) {
   const trackerKey = isSelfCustody ? undefined : customer.privateKey;
 
   try {
+    const delta = -settleAmount;
     const result = await tracker.proposeNoteUpdate(
       {
         debtorPubKey: obligation.debtorPubKey,
         creditorPubKey: obligation.creditorPubKey,
-        delta: -settleAmount,
+        delta,
         expectedVersion: obligation.version,
         requestId: uuid(),
         providerId,
@@ -59,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     // Update settlement status
     const newAmount = obligation.currentAmount - settleAmount;
-    if (newAmount <= 0 && !isSelfCustody) {
+    if (newAmount <= BigInt(0) && !isSelfCustody) {
       await prisma.obligationState.update({
         where: { id: obligation.id },
         data: { settlementStatus: "settled" },
@@ -68,11 +72,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       obligation: {
-        currentAmount: result.currentAmount,
-        pendingAmount: result.pendingAmount,
+        currentAmount: result.currentAmount.toString(),
+        pendingAmount: result.pendingAmount.toString(),
         version: result.version,
       },
-      settlement,
+      settlement: { ...settlement, amount: settlement.amount.toString() },
       ...(isSelfCustody
         ? {
             pendingSignature: true,

@@ -2,9 +2,10 @@ import { prisma } from "@/lib/prisma";
 import { recordTrackerDeployment, computeCumulativeTrackerDebt } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
 
+import { nanoCreditsToNanoErg } from "@/lib/credits";
+
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
 const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
-const NANO_PER_CREDIT = 1_000_000_000;
 
 /**
  * POST /api/tracker/deploy
@@ -30,12 +31,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Reserve and obligation belong to different customers" }, { status: 400 });
   }
 
-  if (obligation.currentAmount <= 0) {
+  if (obligation.currentAmount <= BigInt(0)) {
     return NextResponse.json({ error: "Obligation has no debt to commit" }, { status: 409 });
   }
 
-  // Compute the correct cumulative totalDebt
-  const redeemAmountNanoErg = Math.round(obligation.currentAmount * NANO_PER_CREDIT);
+  // Compute the correct cumulative totalDebt (v1: nanoCredits = nanoERG)
+  const redeemAmountNanoErg = nanoCreditsToNanoErg(obligation.currentAmount);
   const { totalDebtNanoErg } = await computeCumulativeTrackerDebt(
     reserve.customerId,
     obligation.debtorPubKey,
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         ownerPubKeyHex: obligation.debtorPubKey,
         receiverPubKeyHex: obligation.creditorPubKey,
-        totalDebtNanoErg,
+        totalDebtNanoErg: Number(totalDebtNanoErg),
         trackerNftId: reserve.trackerNftId,
         nodeApiKey: ERGO_NODE_API_KEY,
       }),
@@ -81,7 +82,7 @@ export async function POST(req: NextRequest) {
     deployment: {
       id: deployment.id,
       trackerBoxId: sidecarResult.trackerBoxId,
-      totalDebtNanoErg,
+      totalDebtNanoErg: totalDebtNanoErg.toString(),
       trackerPubKeyHex: sidecarResult.trackerPubKeyHex,
       treeDigestHex: sidecarResult.treeDigestHex,
       txId: sidecarResult.txId,

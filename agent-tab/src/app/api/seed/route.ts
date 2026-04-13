@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
       name: "Text Analysis",
       description: "Analyze text for word count, reading level, and structure",
       endpoint: `${baseUrl}/api/demo-tool/analyze`,
-      costPerCall: 0.10,
+      costPerCall: BigInt(100_000_000),
     },
   });
 
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       name: "Text Summary",
       description: "Extract key sentences from text content",
       endpoint: `${baseUrl}/api/demo-tool/summarize`,
-      costPerCall: 0.25,
+      costPerCall: BigInt(250_000_000),
     },
   });
 
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
       name: "LLM Completion",
       description: "AI language model completion via Anthropic Claude",
       endpoint: `${baseUrl}/api/demo-tool/completion`,
-      costPerCall: 0.05,
+      costPerCall: BigInt(50_000_000),
     },
   });
 
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     data: {
       providerId: provider1.id,
       customerId: customer.id,
-      limitAmount: 50.0,
+      limitAmount: BigInt(50_000_000_000),
       alertThreshold: 0.8,
     },
   });
@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
     data: {
       providerId: provider2.id,
       customerId: customer.id,
-      limitAmount: 25.0,
+      limitAmount: BigInt(25_000_000_000),
       alertThreshold: 0.8,
     },
   });
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
 
   // --- Simulate usage for Provider 1 (text tools) ---
   const now = new Date();
-  let cum1 = 0;
+  let cum1 = BigInt(0);
   let ver1 = 0;
 
   for (let i = 0; i < 6; i++) {
@@ -183,7 +183,7 @@ export async function POST(req: NextRequest) {
   });
 
   // --- Simulate usage for Provider 2 (LLM completion) ---
-  let cum2 = 0;
+  let cum2 = BigInt(0);
   let ver2 = 0;
 
   for (let i = 0; i < 4; i++) {
@@ -253,7 +253,7 @@ export async function POST(req: NextRequest) {
     data: {
       providerId: provider1.id,
       customerId: customer2.id,
-      limitAmount: 30.0,
+      limitAmount: BigInt(30_000_000_000),
       alertThreshold: 0.8,
     },
   });
@@ -276,7 +276,7 @@ export async function POST(req: NextRequest) {
     sessionKeys.publicKey,
     provider1.id, // scoped to ToolSmith AI
     "*", // all tools
-    20.0, // $20 spend cap
+    BigInt(20_000_000_000), // 20 credits spend cap
     expiresAt.toISOString()
   );
   const delegationAuthSig = await signMessage(delegationAuthMessage, cust2Keys.privateKey);
@@ -287,7 +287,7 @@ export async function POST(req: NextRequest) {
       sessionPubKey: sessionKeys.publicKey,
       scopeProviderIds: provider1.id,
       scopeToolIds: "*",
-      spendCap: 20.0,
+      spendCap: BigInt(20_000_000_000),
       expiresAt,
       authMessage: delegationAuthMessage,
       authSignature: delegationAuthSig,
@@ -321,14 +321,14 @@ export async function POST(req: NextRequest) {
       completion: completionTool.id,
     },
     obligations: [
-      { id: obl1.id, provider: "ToolSmith AI", balance: cum1, version: ver1 },
-      { id: obl2.id, provider: "Compute Labs", balance: cum2, version: ver2 },
+      { id: obl1.id, provider: "ToolSmith AI", balance: cum1.toString(), version: ver1 },
+      { id: obl2.id, provider: "Compute Labs", balance: cum2.toString(), version: ver2 },
     ],
     delegation: {
       id: delegation.id,
       sessionPubKey: sessionKeys.publicKey,
       sessionPrivateKey: sessionKeys.privateKey, // returned ONCE for agent config
-      spendCap: 20.0,
+      spendCap: "20.00",
       scopeProvider: "ToolSmith AI",
       expiresAt: expiresAt.toISOString(),
     },

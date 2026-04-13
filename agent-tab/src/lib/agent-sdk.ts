@@ -63,10 +63,10 @@ export interface CallToolResult {
   toolResponse: Record<string, unknown>;
   toolStatus: number;
   tab: {
-    balance: number;
-    pending: number;
-    limit: number;
-    remaining: number;
+    balance: string;
+    pending: string;
+    limit: string;
+    remaining: string;
     utilization: number;
     version: number;
     signature: string | null;
@@ -178,7 +178,7 @@ export class AgentTabClient {
         balance: signData.obligation.currentAmount,
         pending: signData.obligation.pendingAmount,
         limit: proxyData.tab.limit,
-        remaining: proxyData.tab.limit - signData.obligation.currentAmount - signData.obligation.pendingAmount,
+        remaining: (BigInt(proxyData.tab.limit) - BigInt(signData.obligation.currentAmount) - BigInt(signData.obligation.pendingAmount)).toString(),
         utilization: proxyData.tab.utilization,
         version: signData.version,
         signature,

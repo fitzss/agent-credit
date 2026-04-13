@@ -55,9 +55,9 @@ export async function POST(req: NextRequest) {
         reserveId: p.reserveId,
         obligationId: p.obligationId,
         redemptionTxId: p.txId,
-        grossRedeemNanoErg: Number(p.grossRedeemNanoErg),
-        feeNanoErg: Number(p.feeNanoErg),
-        netPayoutNanoErg: Number(p.netPayoutNanoErg),
+        grossRedeemNanoErg: p.grossRedeemNanoErg,
+        feeNanoErg: p.feeNanoErg,
+        netPayoutNanoErg: p.netPayoutNanoErg,
       });
       await prisma.pendingRedemption.update({ where: { id: p.id }, data: { status: "reconciled" } });
       results.push({ txId: p.txId, status: "reconciled", settlement: result.settlement });

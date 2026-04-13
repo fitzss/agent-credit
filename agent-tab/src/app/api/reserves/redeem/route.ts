@@ -3,9 +3,10 @@ import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gath
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
 
+import { nanoCreditsToNanoErg } from "@/lib/credits";
+
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
 const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
-const NANO_PER_CREDIT = 1_000_000_000;
 
 /**
  * POST /api/reserves/redeem
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Reserve and obligation belong to different customers" }, { status: 400 });
   }
 
-  if (obligation.currentAmount <= 0) {
+  if (obligation.currentAmount <= BigInt(0)) {
     // If we just recovered a pending redemption for this obligation, report it
     if (recovered.length > 0) {
       const match = recovered.find(r => r.obligationId === obligationId && r.status === "reconciled");
@@ -99,7 +100,8 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Step 3: Compute redemption parameters ---
-  const redeemAmountNanoErg = Math.round(obligation.currentAmount * NANO_PER_CREDIT);
+  // v1: nanoCredits = nanoERG (identity)
+  const redeemAmountNanoErg = nanoCreditsToNanoErg(obligation.currentAmount);
 
   // Cumulative tracker debt: single source of truth via helper
   const { totalDebtNanoErg, previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(
@@ -153,10 +155,13 @@ export async function POST(req: NextRequest) {
         trackerNftId: reserve.trackerNftId,
         ownerPubKeyHex: reserve.debtorPubKey,
         receiverPubKeyHex: obligation.creditorPubKey,
-        totalDebtNanoErg,
-        redeemAmountNanoErg,
+        totalDebtNanoErg: Number(totalDebtNanoErg),
+        redeemAmountNanoErg: Number(redeemAmountNanoErg),
         nodeApiKey: ERGO_NODE_API_KEY,
-        existingReserveEntries,
+        existingReserveEntries: existingReserveEntries.map((e) => ({
+          ...e,
+          redeemedNanoErg: Number(e.redeemedNanoErg),
+        })),
         // Pass all tracker tree entries for multi-entry proof generation
         trackerEntries: await (async () => {
           const { getCurrentTrackerBox } = await import("@/lib/reconcile");
@@ -181,8 +186,8 @@ export async function POST(req: NextRequest) {
   }
 
   const txId = redeemResult.txId?.replace(/"/g, "") || redeemResult.txId;
-  const feeNanoErg = redeemResult.feeNanoErg || 0;
-  const netPayoutNanoErg = redeemResult.payoutNanoErg || 0;
+  const feeNanoErg = BigInt(redeemResult.feeNanoErg || 0);
+  const netPayoutNanoErg = BigInt(redeemResult.payoutNanoErg || 0);
 
   // --- Step 5: Poll for confirmation ---
   const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
@@ -203,9 +208,9 @@ export async function POST(req: NextRequest) {
         txId,
         reserveId,
         obligationId,
-        grossRedeemNanoErg: BigInt(redeemAmountNanoErg),
-        feeNanoErg: BigInt(feeNanoErg),
-        netPayoutNanoErg: BigInt(netPayoutNanoErg),
+        grossRedeemNanoErg: redeemAmountNanoErg,
+        feeNanoErg,
+        netPayoutNanoErg,
         status: "pending",
       },
     });
@@ -236,9 +241,9 @@ export async function POST(req: NextRequest) {
     await prisma.pendingRedemption.create({
       data: {
         txId, reserveId, obligationId,
-        grossRedeemNanoErg: BigInt(redeemAmountNanoErg),
-        feeNanoErg: BigInt(feeNanoErg),
-        netPayoutNanoErg: BigInt(netPayoutNanoErg),
+        grossRedeemNanoErg: redeemAmountNanoErg,
+        feeNanoErg,
+        netPayoutNanoErg,
         status: "pending",
       },
     });
@@ -303,9 +308,9 @@ async function recoverPending(reserveId: string): Promise<RecoveryResult[]> {
         reserveId: p.reserveId,
         obligationId: p.obligationId,
         redemptionTxId: p.txId,
-        grossRedeemNanoErg: Number(p.grossRedeemNanoErg),
-        feeNanoErg: Number(p.feeNanoErg),
-        netPayoutNanoErg: Number(p.netPayoutNanoErg),
+        grossRedeemNanoErg: p.grossRedeemNanoErg,
+        feeNanoErg: p.feeNanoErg,
+        netPayoutNanoErg: p.netPayoutNanoErg,
       });
       await prisma.pendingRedemption.update({
         where: { id: p.id },

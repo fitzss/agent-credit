@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { formatCredits } from "@/lib/credits";
 
 interface Proof {
   obligationId: string;
   debtorPubKey: string;
   creditorPubKey: string;
-  cumulativeAmount: number;
+  currentAmount: string;
+  pendingAmount: string;
   version: number;
   lastUpdatedAt: string;
   canonicalMessage: string;
@@ -22,9 +24,9 @@ interface Proof {
 interface Update {
   id: string;
   version: number;
-  previousAmount: number;
-  newAmount: number;
-  delta: number;
+  previousAmount: string;
+  newAmount: string;
+  delta: string;
   canonicalMessage: string;
   signature: string;
   type: string;
@@ -83,7 +85,7 @@ export default function CreditStatementPage() {
             <p className="text-sm text-zinc-500 uppercase tracking-wider">
               Current Signed Balance
             </p>
-            <p className="text-4xl font-mono mt-2">${proof.cumulativeAmount.toFixed(2)}</p>
+            <p className="text-4xl font-mono mt-2">${formatCredits(BigInt(proof.currentAmount))}</p>
             <p className="text-sm text-zinc-500 mt-1">
               Version {proof.version} &middot; {new Date(proof.lastUpdatedAt).toLocaleString()}
             </p>
@@ -174,12 +176,12 @@ export default function CreditStatementPage() {
                   </td>
                   <td
                     className={`px-4 py-3 text-right font-mono ${
-                      u.delta >= 0 ? "text-red-400" : "text-green-400"
+                      BigInt(u.delta) >= BigInt(0) ? "text-red-400" : "text-green-400"
                     }`}
                   >
-                    {u.delta >= 0 ? "+" : ""}${u.delta.toFixed(2)}
+                    {BigInt(u.delta) >= BigInt(0) ? "+" : ""}${formatCredits(BigInt(u.delta))}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono">${u.newAmount.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-mono">${formatCredits(BigInt(u.newAmount))}</td>
                   <td className="px-4 py-3 font-mono text-xs text-zinc-500">
                     {u.signature.slice(0, 16)}...
                   </td>

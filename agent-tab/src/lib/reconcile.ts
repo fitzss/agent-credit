@@ -4,8 +4,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
+import { nanoCreditsToNanoErg } from "@/lib/credits";
+
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
-const NANO_PER_CREDIT = 1_000_000_000;
 
 // Confirmation polling config — set DEMO_MODE=true for longer windows
 const DEMO_MODE = process.env.DEMO_MODE === "true";
@@ -74,19 +75,19 @@ export interface ReconcileInput {
   reserveId: string;
   obligationId: string;
   redemptionTxId: string;
-  grossRedeemNanoErg: number;
-  feeNanoErg?: number;
-  netPayoutNanoErg?: number;
+  grossRedeemNanoErg: bigint;
+  feeNanoErg?: bigint;
+  netPayoutNanoErg?: bigint;
 }
 
 export interface ReconcileResult {
   reconciled: true;
   redemptionTxId: string;
   accounting: {
-    grossRedeemNanoErg: number;
-    feeNanoErg: number | null;
-    netPayoutNanoErg: number | null;
-    grossRedeemCredits: number;
+    grossRedeemNanoErg: string;
+    feeNanoErg: string | null;
+    netPayoutNanoErg: string | null;
+    grossRedeemNanoCredits: string;
   };
   chainVerification: Record<string, boolean>;
   before: Record<string, any>;
@@ -139,11 +140,12 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
   }
 
   // --- Guardrail 3: Sufficient debt ---
-  const grossRedeemCredits = grossRedeemNanoErg / NANO_PER_CREDIT;
-  if (obligation.currentAmount < grossRedeemCredits - 0.000001) {
+  // v1: nanoCredits = nanoERG (identity conversion)
+  const grossRedeemNanoCredits = grossRedeemNanoErg; // nanoCreditsToNanoErg is identity in v1
+  if (obligation.currentAmount < grossRedeemNanoCredits) {
     throw new ReconcileError("Obligation has insufficient debt", 409, {
-      obligationCurrentAmount: obligation.currentAmount,
-      grossRedeemCredits,
+      obligationCurrentAmount: obligation.currentAmount.toString(),
+      grossRedeemNanoCredits: grossRedeemNanoCredits.toString(),
     });
   }
 
@@ -181,7 +183,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
 
   // --- Guardrail 7: Outflow matches ---
   const newReserveValue = BigInt(reserveOutput.value);
-  const expectedValueAfter = reserve.valueNanoErg - BigInt(grossRedeemNanoErg);
+  const expectedValueAfter = reserve.valueNanoErg - nanoCreditsToNanoErg(grossRedeemNanoErg);
   if (newReserveValue !== expectedValueAfter) {
     throw new ReconcileError("Reserve outflow mismatch", 409, {
       dbValueBefore: reserve.valueNanoErg.toString(),
@@ -198,12 +200,13 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
   }
 
   // --- Compute ---
-  const newObligationAmount = Math.max(0, obligation.currentAmount - grossRedeemCredits);
-  const isFullySettled = newObligationAmount <= 0;
+  const newObligationAmount = obligation.currentAmount - grossRedeemNanoCredits;
+  const clampedObligationAmount = newObligationAmount < BigInt(0) ? BigInt(0) : newObligationAmount;
+  const isFullySettled = clampedObligationAmount <= BigInt(0);
 
   const before = {
     reserve: { boxId: reserve.boxId, valueNanoErg: reserve.valueNanoErg.toString(), lifecycle: reserve.lifecycle },
-    obligation: { currentAmount: obligation.currentAmount, settlementStatus: obligation.settlementStatus },
+    obligation: { currentAmount: obligation.currentAmount.toString(), settlementStatus: obligation.settlementStatus },
   };
 
   // --- Atomic writes ---
@@ -220,7 +223,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
     prisma.settlementEvent.create({
       data: {
         obligationStateId: obligationId,
-        amount: grossRedeemCredits,
+        amount: grossRedeemNanoCredits,
         method: "on-chain-redemption",
         status: "completed",
         redemptionTxId,
@@ -229,7 +232,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
     prisma.obligationState.update({
       where: { id: obligationId },
       data: {
-        currentAmount: newObligationAmount,
+        currentAmount: clampedObligationAmount,
         settlementStatus: isFullySettled ? "settled" : "partial",
       },
     }),
@@ -237,17 +240,22 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
 
   const after = {
     reserve: { boxId: reserveOutput.boxId, valueNanoErg: newReserveValue.toString(), lifecycle: newReserveValue > BigInt(0) ? "active" : "depleted" },
-    obligation: { currentAmount: newObligationAmount, settlementStatus: isFullySettled ? "settled" : "partial" },
+    obligation: { currentAmount: clampedObligationAmount.toString(), settlementStatus: isFullySettled ? "settled" : "partial" },
   };
 
   return {
     reconciled: true,
     redemptionTxId,
-    accounting: { grossRedeemNanoErg, feeNanoErg: feeNanoErg || null, netPayoutNanoErg: netPayoutNanoErg || null, grossRedeemCredits },
+    accounting: {
+      grossRedeemNanoErg: grossRedeemNanoErg.toString(),
+      feeNanoErg: feeNanoErg?.toString() ?? null,
+      netPayoutNanoErg: netPayoutNanoErg?.toString() ?? null,
+      grossRedeemNanoCredits: grossRedeemNanoCredits.toString(),
+    },
     chainVerification: { txConfirmed: true, spentExpectedBox: true, reserveTokenInOutput: true, outflowVerified: true, sidecarConsistent: true },
     before,
     after,
-    settlement: { id: settlement.id, amount: settlement.amount, method: settlement.method, redemptionTxId: settlement.redemptionTxId },
+    settlement: { id: settlement.id, amount: settlement.amount.toString(), method: settlement.method, redemptionTxId: settlement.redemptionTxId },
   };
 }
 
@@ -268,8 +276,8 @@ export async function computeCumulativeTrackerDebt(
   customerId: string,
   debtorPubKey: string,
   creditorPubKey: string,
-  currentObligationNanoErg: number
-): Promise<{ totalDebtNanoErg: number; previouslyRedeemedNanoErg: number }> {
+  currentObligationNanoErg: bigint
+): Promise<{ totalDebtNanoErg: bigint; previouslyRedeemedNanoErg: bigint }> {
   const priorSettlements = await prisma.settlementEvent.findMany({
     where: {
       method: "on-chain-redemption",
@@ -284,7 +292,7 @@ export async function computeCumulativeTrackerDebt(
       s.obligationState.debtorPubKey === debtorPubKey &&
       s.obligationState.creditorPubKey === creditorPubKey
     )
-    .reduce((sum, s) => sum + Math.round(s.amount * NANO_PER_CREDIT), 0);
+    .reduce((sum, s) => sum + nanoCreditsToNanoErg(s.amount), BigInt(0));
 
   return {
     totalDebtNanoErg: previouslyRedeemedNanoErg + currentObligationNanoErg,
@@ -311,18 +319,18 @@ export async function gatherExistingReserveEntries(customerId: string) {
   });
 
   // Aggregate by (debtor, creditor) pair — the reserve tree has one key per pair
-  const pairMap = new Map<string, { ownerPubKeyHex: string; receiverPubKeyHex: string; redeemedNanoErg: number }>();
+  const pairMap = new Map<string, { ownerPubKeyHex: string; receiverPubKeyHex: string; redeemedNanoErg: bigint }>();
   for (const s of priorSettlements) {
     if (!s.redemptionTxId) continue;
     const pairKey = `${s.obligationState.debtorPubKey}|${s.obligationState.creditorPubKey}`;
     const existing = pairMap.get(pairKey);
     if (existing) {
-      existing.redeemedNanoErg += Math.round(s.amount * NANO_PER_CREDIT);
+      existing.redeemedNanoErg += nanoCreditsToNanoErg(s.amount);
     } else {
       pairMap.set(pairKey, {
         ownerPubKeyHex: s.obligationState.debtorPubKey,
         receiverPubKeyHex: s.obligationState.creditorPubKey,
-        redeemedNanoErg: Math.round(s.amount * NANO_PER_CREDIT),
+        redeemedNanoErg: nanoCreditsToNanoErg(s.amount),
       });
     }
   }
@@ -335,7 +343,7 @@ export interface TrackerDeploymentRecord {
   trackerNftId: string;
   debtorPubKey: string;
   creditorPubKey: string;
-  totalDebtNanoErg: number;
+  totalDebtNanoErg: bigint;
   boxId: string;
   trackerPubKeyHex: string;
   treeDigestHex: string;
@@ -375,7 +383,7 @@ export async function recordTrackerDeployment(record: TrackerDeploymentRecord) {
         create: {
           debtorPubKey: record.debtorPubKey,
           creditorPubKey: record.creditorPubKey,
-          totalDebtNanoErg: BigInt(record.totalDebtNanoErg),
+          totalDebtNanoErg: record.totalDebtNanoErg,
         },
       },
     },
@@ -422,7 +430,7 @@ export async function validateTrackerAlignment(
   trackerNftId: string,
   debtorPubKey: string,
   creditorPubKey: string,
-  requiredTotalDebtNanoErg: number,
+  requiredTotalDebtNanoErg: bigint,
 ): Promise<{ trackerBoxId: string }> {
   const entry = await getTrackerEntryForPair(trackerNftId, debtorPubKey, creditorPubKey);
 
@@ -434,16 +442,15 @@ export async function validateTrackerAlignment(
     );
   }
 
-  const committedDebt = Number(entry.totalDebtNanoErg);
-  if (committedDebt !== requiredTotalDebtNanoErg) {
+  if (entry.totalDebtNanoErg !== requiredTotalDebtNanoErg) {
     throw new ReconcileError(
       "Tracker cumulative debt is stale: committed debt does not match required totalDebt.",
       409,
       {
-        committedDebtNanoErg: committedDebt,
-        requiredTotalDebtNanoErg,
+        committedDebtNanoErg: entry.totalDebtNanoErg.toString(),
+        requiredTotalDebtNanoErg: requiredTotalDebtNanoErg.toString(),
         trackerBoxId: entry.trackerBoxId,
-        hint: "Redeploy tracker with totalDebtNanoErg=" + requiredTotalDebtNanoErg,
+        hint: "Redeploy tracker with totalDebtNanoErg=" + requiredTotalDebtNanoErg.toString(),
       }
     );
   }
@@ -463,13 +470,13 @@ export async function deployAndRecordTracker(params: {
   trackerNftId: string;
   debtorPubKey: string;
   creditorPubKey: string;
-  totalDebtNanoErg: number;
+  totalDebtNanoErg: bigint;
 }): Promise<{ trackerBoxId: string; deployment: any }> {
   const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
 
   // Build full entry set: existing entries + new/updated pair
   const currentBox = await getCurrentTrackerBox(trackerNftId);
-  const entries: { ownerPubKeyHex: string; receiverPubKeyHex: string; totalDebtNanoErg: number }[] = [];
+  const entries: { ownerPubKeyHex: string; receiverPubKeyHex: string; totalDebtNanoErg: bigint }[] = [];
 
   if (currentBox) {
     // Carry forward existing entries (excluding the pair being updated)
@@ -478,18 +485,23 @@ export async function deployAndRecordTracker(params: {
       entries.push({
         ownerPubKeyHex: e.debtorPubKey,
         receiverPubKeyHex: e.creditorPubKey,
-        totalDebtNanoErg: Number(e.totalDebtNanoErg),
+        totalDebtNanoErg: e.totalDebtNanoErg,
       });
     }
   }
   // Add the new/updated pair
   entries.push({ ownerPubKeyHex: debtorPubKey, receiverPubKeyHex: creditorPubKey, totalDebtNanoErg });
 
-  // Call sidecar /tracker/update with full entry set
+  // Call sidecar /tracker/update with full entry set (serialize BigInt for JSON)
+  const sidecarEntries = entries.map((e) => ({
+    ownerPubKeyHex: e.ownerPubKeyHex,
+    receiverPubKeyHex: e.receiverPubKeyHex,
+    totalDebtNanoErg: Number(e.totalDebtNanoErg),
+  }));
   const res = await fetch(`${SIDECAR_URL}/tracker/update`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ trackerNftId, entries, nodeApiKey: ERGO_NODE_API_KEY }),
+    body: JSON.stringify({ trackerNftId, entries: sidecarEntries, nodeApiKey: ERGO_NODE_API_KEY }),
   });
   const result = await res.json();
   if (result.error) {
@@ -514,7 +526,7 @@ export async function deployAndRecordTracker(params: {
         create: entries.map((e) => ({
           debtorPubKey: e.ownerPubKeyHex,
           creditorPubKey: e.receiverPubKeyHex,
-          totalDebtNanoErg: BigInt(e.totalDebtNanoErg),
+          totalDebtNanoErg: e.totalDebtNanoErg,
         })),
       },
     },
@@ -553,13 +565,13 @@ export async function ensureTrackerAligned(params: {
   trackerNftId: string;
   debtorPubKey: string;
   creditorPubKey: string;
-  totalDebtNanoErg: number;
+  totalDebtNanoErg: bigint;
 }): Promise<{ trackerBoxId: string; autoDeployed: boolean }> {
   const { trackerNftId, debtorPubKey, creditorPubKey, totalDebtNanoErg } = params;
 
   const entry = await getTrackerEntryForPair(trackerNftId, debtorPubKey, creditorPubKey);
 
-  if (entry && Number(entry.totalDebtNanoErg) === totalDebtNanoErg) {
+  if (entry && entry.totalDebtNanoErg === totalDebtNanoErg) {
     // Aligned — use existing
     return { trackerBoxId: entry.trackerBoxId, autoDeployed: false };
   }

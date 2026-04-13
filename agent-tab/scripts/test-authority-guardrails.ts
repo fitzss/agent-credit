@@ -67,9 +67,9 @@ async function proxyCall(sessionPubKey: string, agentKey: string = AGENT_KEY) {
   return { status: res.status, data: await res.json() };
 }
 
-async function getObligationBalance(): Promise<number> {
+async function getObligationBalance(): Promise<bigint> {
   const obl = await prisma.obligationState.findUnique({ where: { id: OBLIGATION_ID } });
-  return obl?.currentAmount ?? 0;
+  return obl?.currentAmount ?? BigInt(0);
 }
 
 async function cleanupDelegation(id: string) {
@@ -106,7 +106,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: "nonexistent-provider-00000000",
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "test-only",
           authSignature: "test-only",
@@ -124,9 +124,9 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated on rejection", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated on rejection", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
     } finally {
       await cleanupDelegation(testId);
@@ -150,7 +150,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() - 3600_000), // 1 hour ago
           authMessage: "test-only",
           authSignature: "test-only",
@@ -168,17 +168,17 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated on rejection", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated on rejection", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
 
       // Also verify the delegation's spentSoFar was not touched
       const del = await prisma.delegation.findUnique({ where: { id: testId } });
-      if (del && del.spentSoFar === 0) {
-        pass("No mutation: delegation spentSoFar unchanged ($0.00)");
+      if (del && del.spentSoFar === BigInt(0)) {
+        pass("No mutation: delegation spentSoFar unchanged (0)");
       } else {
-        fail("Delegation spentSoFar mutated", `got $${del?.spentSoFar?.toFixed(2)}`);
+        fail("Delegation spentSoFar mutated", `got ${del?.spentSoFar?.toString()}`);
       }
     } finally {
       await cleanupDelegation(testId);
@@ -202,8 +202,8 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 0.05, // tool costs $0.10 — exceeds cap
-          spentSoFar: 0,
+          spendCap: BigInt(50_000_000), // tool costs 100M nanoCredits — exceeds cap
+          spentSoFar: BigInt(0),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "test-only",
           authSignature: "test-only",
@@ -221,16 +221,16 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated on rejection", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated on rejection", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
 
       const del = await prisma.delegation.findUnique({ where: { id: testId } });
-      if (del && del.spentSoFar === 0) {
-        pass("No mutation: delegation spentSoFar unchanged ($0.00)");
+      if (del && del.spentSoFar === BigInt(0)) {
+        pass("No mutation: delegation spentSoFar unchanged (0)");
       } else {
-        fail("Delegation spentSoFar mutated", `got $${del?.spentSoFar?.toFixed(2)}`);
+        fail("Delegation spentSoFar mutated", `got ${del?.spentSoFar?.toString()}`);
       }
     } finally {
       await cleanupDelegation(testId);
@@ -250,7 +250,7 @@ async function main() {
       // Create via API (valid signature, agent-bound) then revoke
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
       const authMsg = buildDelegationMessage(
-        rootPubKey, AGENT_1_ID, session.publicKey, PROVIDER_ID, "*", 50.0, expiresAt
+        rootPubKey, AGENT_1_ID, session.publicKey, PROVIDER_ID, "*", BigInt(50_000_000_000), expiresAt
       );
       const authSig = await signMessage(authMsg, rootPrivKey);
 
@@ -263,7 +263,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: "50.0",
           expiresAt,
           authSignature: authSig,
         }),
@@ -289,9 +289,9 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated on rejection", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated on rejection", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
     } finally {
       if (delegationId) await cleanupDelegation(delegationId);
@@ -317,7 +317,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "test-only",
           authSignature: "test-only",
@@ -336,16 +336,16 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated on rejection", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated on rejection", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
 
       const del = await prisma.delegation.findUnique({ where: { id: testId } });
-      if (del && del.spentSoFar === 0) {
-        pass("No mutation: delegation spentSoFar unchanged ($0.00)");
+      if (del && del.spentSoFar === BigInt(0)) {
+        pass("No mutation: delegation spentSoFar unchanged (0)");
       } else {
-        fail("Delegation spentSoFar mutated", `got $${del?.spentSoFar?.toFixed(2)}`);
+        fail("Delegation spentSoFar mutated", `got ${del?.spentSoFar?.toString()}`);
       }
     } finally {
       await cleanupDelegation(testId);
@@ -361,7 +361,7 @@ async function main() {
       const session = generateKeypair();
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
       const authMsg = buildDelegationMessage(
-        rootPubKey, "nonexistent-agent-id", session.publicKey, PROVIDER_ID, "*", 50.0, expiresAt
+        rootPubKey, "nonexistent-agent-id", session.publicKey, PROVIDER_ID, "*", BigInt(50_000_000_000), expiresAt
       );
       const authSig = await signMessage(authMsg, rootPrivKey);
 
@@ -374,7 +374,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: "50.0",
           expiresAt,
           authSignature: authSig,
         }),
@@ -411,7 +411,7 @@ async function main() {
           sessionPubKey: session1.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "test-only",
           authSignature: "test-only",
@@ -428,7 +428,7 @@ async function main() {
           sessionPubKey: session2.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "test-only",
           authSignature: "test-only",
@@ -466,9 +466,9 @@ async function main() {
 
       const balanceAfter = await getObligationBalance();
       if (balanceAfter === balanceBefore) {
-        pass(`No mutation: obligation balance unchanged ($${balanceBefore.toFixed(2)})`);
+        pass(`No mutation: obligation balance unchanged (${balanceBefore.toString()})`);
       } else {
-        fail("Obligation mutated", `$${balanceBefore.toFixed(2)} → $${balanceAfter.toFixed(2)}`);
+        fail("Obligation mutated", `${balanceBefore.toString()} → ${balanceAfter.toString()}`);
       }
     } finally {
       await cleanupDelegation(testD1);
@@ -494,7 +494,7 @@ async function main() {
           sessionPubKey: session.publicKey,
           scopeProviderIds: PROVIDER_ID,
           scopeToolIds: "*",
-          spendCap: 50.0,
+          spendCap: BigInt(50_000_000_000),
           expiresAt: new Date(Date.now() + 3600_000),
           authMessage: "legacy-test",
           authSignature: "legacy-test",

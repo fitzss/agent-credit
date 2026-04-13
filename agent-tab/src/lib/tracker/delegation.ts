@@ -16,10 +16,10 @@ export function buildDelegationMessageV1(
   sessionPubKey: string,
   scopeProviderIds: string,
   scopeToolIds: string,
-  spendCap: number,
+  spendCap: bigint,
   expiresAt: string
 ): string {
-  return `agentab:delegate:v1|${debtorPubKey}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toFixed(8)}|${expiresAt}`;
+  return `agentab:delegate:v1|${debtorPubKey}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toString()}|${expiresAt}`;
 }
 
 /**
@@ -32,10 +32,10 @@ export function buildDelegationMessage(
   sessionPubKey: string,
   scopeProviderIds: string,
   scopeToolIds: string,
-  spendCap: number,
+  spendCap: bigint,
   expiresAt: string
 ): string {
-  return `agentab:delegate:v2|${debtorPubKey}|${agentIdentityId}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toFixed(8)}|${expiresAt}`;
+  return `agentab:delegate:v2|${debtorPubKey}|${agentIdentityId}|${sessionPubKey}|${scopeProviderIds}|${scopeToolIds}|${spendCap.toString()}|${expiresAt}`;
 }
 
 export async function verifyDelegationAuth(
@@ -49,8 +49,8 @@ export async function verifyDelegationAuth(
 export interface DelegationScope {
   scopeProviderIds: string;
   scopeToolIds: string;
-  spendCap: number;
-  spentSoFar: number;
+  spendCap: bigint;
+  spentSoFar: bigint;
   expiresAt: Date;
   status: string;
   agentIdentityId?: string | null;
@@ -68,7 +68,7 @@ export function checkDelegationScope(
   authenticatedAgentId: string,
   providerId: string,
   toolId: string,
-  cost: number,
+  cost: bigint,
   now: Date = new Date()
 ): { ok: boolean; reason?: string } {
   // Agent binding check (first — most specific constraint)
@@ -99,7 +99,7 @@ export function checkDelegationScope(
   }
 
   if (delegation.spentSoFar + cost > delegation.spendCap) {
-    return { ok: false, reason: `Delegation spend cap exceeded (${delegation.spentSoFar.toFixed(2)} + ${cost.toFixed(2)} > ${delegation.spendCap.toFixed(2)})` };
+    return { ok: false, reason: `Delegation spend cap exceeded (${delegation.spentSoFar.toString()} + ${cost.toString()} > ${delegation.spendCap.toString()})` };
   }
 
   return { ok: true };

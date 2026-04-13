@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseCredits } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
       data: {
         providerId: body.providerId,
         customerId: body.customerId,
-        limitAmount: body.limitAmount,
+        limitAmount: parseCredits(String(body.limitAmount)),
         alertThreshold: body.alertThreshold ?? 0.8,
         dueDays: body.dueDays ?? 30,
       },
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
       create: {
         providerId: body.providerId,
         customerId: body.customerId,
-        currentAmount: 0,
+        currentAmount: BigInt(0),
       },
       update: {},
     }),

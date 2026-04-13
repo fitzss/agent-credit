@@ -100,11 +100,11 @@ async function seed() {
       name: "Text Analysis",
       description: "Analyze text (authority demo tool)",
       endpoint: "http://localhost:3000/api/demo-tool/analyze",
-      costPerCall: 0.10,
+      costPerCall: BigInt(100_000_000),
     },
   });
   console.log(`Created provider: ${provider.name} (${provider.id})`);
-  console.log(`Created tool: ${tool.name} ($${tool.costPerCall}/call)`);
+  console.log(`Created tool: ${tool.name} (${tool.costPerCall.toString()} nanoCredits/call)`);
 
   // --- Self-custody customer with real keypair ---
   const custKeys = generateKeypair();
@@ -152,7 +152,7 @@ async function seed() {
       id: IDS.creditLine,
       providerId: provider.id,
       customerId: customer.id,
-      limitAmount: 50.0,
+      limitAmount: BigInt(50_000_000_000),
       alertThreshold: 0.8,
     },
   });
@@ -183,7 +183,7 @@ async function seed() {
       id: IDS.obligation,
       providerId: provider.id,
       customerId: customer.id,
-      currentAmount: 0,
+      currentAmount: BigInt(0),
       debtorPubKey: custKeys.publicKey,
       creditorPubKey: provKeys.publicKey,
       settlementStatus: "current",
@@ -197,7 +197,7 @@ async function seed() {
   const expiresAt1 = new Date(now.getTime() + 5 * 24 * 3600_000);
   const authMsg1 = buildDelegationMessage(
     custKeys.publicKey, IDS.agent1, sessionKeys1.publicKey,
-    provider.id, "*", 20.0, expiresAt1.toISOString()
+    provider.id, "*", BigInt(20_000_000_000), expiresAt1.toISOString()
   );
   const authSig1 = await signMessage(authMsg1, custKeys.privateKey);
 
@@ -209,8 +209,8 @@ async function seed() {
       sessionPubKey: sessionKeys1.publicKey,
       scopeProviderIds: provider.id,
       scopeToolIds: "*",
-      spendCap: 20.0,
-      spentSoFar: 16.5,
+      spendCap: BigInt(20_000_000_000),
+      spentSoFar: BigInt(16_500_000_000),
       expiresAt: expiresAt1,
       authMessage: authMsg1,
       authSignature: authSig1,
@@ -224,7 +224,7 @@ async function seed() {
   const expiredAt = new Date(now.getTime() - 2 * 24 * 3600_000);
   const authMsg2 = buildDelegationMessage(
     custKeys.publicKey, IDS.agent1, sessionKeys2.publicKey,
-    "*", "*", 10.0, expiredAt.toISOString()
+    "*", "*", BigInt(10_000_000_000), expiredAt.toISOString()
   );
   const authSig2 = await signMessage(authMsg2, custKeys.privateKey);
 
@@ -236,8 +236,8 @@ async function seed() {
       sessionPubKey: sessionKeys2.publicKey,
       scopeProviderIds: "*",
       scopeToolIds: "*",
-      spendCap: 10.0,
-      spentSoFar: 8.0,
+      spendCap: BigInt(10_000_000_000),
+      spentSoFar: BigInt(8_000_000_000),
       expiresAt: expiredAt,
       authMessage: authMsg2,
       authSignature: authSig2,

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { formatCredits, nanoCreditsToNanoErg } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
 
 /**
@@ -7,8 +8,6 @@ import { NextRequest, NextResponse } from "next/server";
  * ?reserveId=X  → full detail for a single pool (scoped to that reserve's customer)
  * (no param)    → lightweight list of active reserves for the pool selector
  */
-
-const NANO_PER_CREDIT = 1_000_000_000;
 
 type SettlementReadiness =
   | "ready"
@@ -66,7 +65,7 @@ export async function GET(req: NextRequest) {
       obligations: [],
       poolHealth: {
         totalReserveValueNanoErg: "0",
-        totalObligationsCredits: 0,
+        totalObligationsNanoCredits: "0",
         coverageRatio: 0,
         poolStatus: "offline" as PoolStatus,
       },
@@ -116,20 +115,19 @@ export async function GET(req: NextRequest) {
     BigInt(0)
   );
 
-  // Total obligations in credits
-  const totalObligationsCredits = obligations.reduce(
+  // Total obligations in nanoCredits
+  const totalObligationsNanoCredits = obligations.reduce(
     (sum, o) => sum + o.currentAmount,
-    0
+    BigInt(0)
   );
-  const totalObligationsNanoErg = BigInt(
-    Math.round(totalObligationsCredits * NANO_PER_CREDIT)
-  );
+  // v1: nanoCredits = nanoERG
+  const totalObligationsNanoErg = totalObligationsNanoCredits;
 
   // Coverage ratio
   const coverageRatio =
-    totalObligationsNanoErg > 0
+    totalObligationsNanoErg > BigInt(0)
       ? Number(totalReserveValueNanoErg) / Number(totalObligationsNanoErg)
-      : totalReserveValueNanoErg > 0
+      : totalReserveValueNanoErg > BigInt(0)
         ? Infinity
         : 0;
 
@@ -147,15 +145,14 @@ export async function GET(req: NextRequest) {
     const reserve = reserves.find((r) => r.customerId === o.customerId);
 
     let settlementReadiness: SettlementReadiness = "ready";
-    if (o.currentAmount <= 0) {
+    if (o.currentAmount <= BigInt(0)) {
       settlementReadiness = "no-debt";
     } else if (!reserve || reserve.lifecycle !== "active") {
       settlementReadiness = "reserve-inactive";
     } else if (pendingByObligation.has(o.id)) {
       settlementReadiness = "pending-redemption";
     } else if (
-      reserve.valueNanoErg <
-      BigInt(Math.round(o.currentAmount * NANO_PER_CREDIT))
+      reserve.valueNanoErg < nanoCreditsToNanoErg(o.currentAmount)
     ) {
       settlementReadiness = "insufficient-reserve";
     }
@@ -166,13 +163,13 @@ export async function GET(req: NextRequest) {
       providerName: o.provider.name,
       customerId: o.customerId,
       customerName: o.customer.name,
-      currentAmount: o.currentAmount,
+      currentAmount: o.currentAmount.toString(),
       version: o.version,
       settlementStatus: o.settlementStatus,
       debtorPubKey: o.debtorPubKey,
       creditorPubKey: o.creditorPubKey,
       latestSignature: o.latestSignature,
-      creditLimit: cl?.limitAmount ?? null,
+      creditLimit: cl?.limitAmount?.toString() ?? null,
       alertThreshold: cl?.alertThreshold ?? null,
       reserveId: reserve?.id ?? null,
       settlementReadiness,
@@ -217,7 +214,7 @@ export async function GET(req: NextRequest) {
   const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
   const delegationsWithCompliance = delegations.map((d) => {
-    const utilization = d.spendCap > 0 ? d.spentSoFar / d.spendCap : 0;
+    const utilization = d.spendCap > BigInt(0) ? Number(d.spentSoFar) / Number(d.spendCap) : 0;
     const timeRemainingMs = d.expiresAt.getTime() - now;
 
     let complianceState: DelegationCompliance = "active";
@@ -258,8 +255,8 @@ export async function GET(req: NextRequest) {
       sessionPubKey: d.sessionPubKey,
       scopeProviders,
       scopeTools,
-      spendCap: d.spendCap,
-      spentSoFar: d.spentSoFar,
+      spendCap: d.spendCap.toString(),
+      spentSoFar: d.spentSoFar.toString(),
       utilization: Math.round(utilization * 100) / 100,
       expiresAt: d.expiresAt.toISOString(),
       timeRemainingMs,
@@ -345,7 +342,7 @@ export async function GET(req: NextRequest) {
     id: s.id,
     obligationStateId: s.obligationStateId,
     providerName: s.obligationState.provider.name,
-    amount: s.amount,
+    amount: s.amount.toString(),
     method: s.method,
     status: s.status,
     redemptionTxId: s.redemptionTxId,
@@ -367,7 +364,7 @@ export async function GET(req: NextRequest) {
     obligations: obligationsWithReadiness,
     poolHealth: {
       totalReserveValueNanoErg: totalReserveValueNanoErg.toString(),
-      totalObligationsCredits,
+      totalObligationsNanoCredits: totalObligationsNanoCredits.toString(),
       coverageRatio: coverageRatio === Infinity ? null : Math.round(coverageRatio * 100) / 100,
       poolStatus,
     },

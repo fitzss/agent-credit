@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { formatCredits } from "@/lib/credits";
 
 /**
  * Pool selector — doorway to individual pool views.
@@ -98,7 +99,7 @@ export default function PoolSelector() {
             </div>
             <div className="flex gap-6 mt-3 text-sm text-zinc-400">
               <span className="font-mono">
-                {(Number(BigInt(r.valueNanoErg)) / 1e9).toFixed(2)} ERG
+                {formatCredits(BigInt(r.valueNanoErg))} ERG
               </span>
               <span>
                 {r.obligationCount} obligation{r.obligationCount !== 1 ? "s" : ""}

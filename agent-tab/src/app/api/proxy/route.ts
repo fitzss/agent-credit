@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (agent.allowedToolIds !== "*" && !agent.allowedToolIds.split(",").includes(toolId)) {
-    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, 0, "denied");
+    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, BigInt(0), "denied");
     return NextResponse.json({ error: "Agent not authorized for this tool" }, { status: 403 });
   }
 
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
     where: { providerId_customerId: { providerId: tool.providerId, customerId: agent.customerId } },
   });
   if (!creditLine || creditLine.status !== "active") {
-    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, 0, "denied");
+    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, BigInt(0), "denied");
     return NextResponse.json({ error: "No active credit line with this provider" }, { status: 403 });
   }
 
@@ -56,15 +56,15 @@ export async function POST(req: NextRequest) {
   const note = await prisma.obligationState.findUnique({
     where: { providerId_customerId: { providerId: tool.providerId, customerId: agent.customerId } },
   });
-  const exposure = (note?.currentAmount ?? 0) + (note?.pendingAmount ?? 0);
+  const exposure = (note?.currentAmount ?? BigInt(0)) + (note?.pendingAmount ?? BigInt(0));
   if (exposure + tool.costPerCall > creditLine.limitAmount) {
     await logUsage(agent.id, toolId, tool.providerId, agent.customerId, tool.costPerCall, "denied");
     return NextResponse.json({
       error: "Credit limit exceeded",
-      currentBalance: note?.currentAmount ?? 0,
-      pendingBalance: note?.pendingAmount ?? 0,
-      limit: creditLine.limitAmount,
-      remaining: creditLine.limitAmount - exposure,
+      currentBalance: (note?.currentAmount ?? BigInt(0)).toString(),
+      pendingBalance: (note?.pendingAmount ?? BigInt(0)).toString(),
+      limit: creditLine.limitAmount.toString(),
+      remaining: (creditLine.limitAmount - exposure).toString(),
     }, { status: 402 });
   }
 
@@ -85,15 +85,15 @@ export async function POST(req: NextRequest) {
 
   // No service → no debt
   if (toolResponse.status >= 400) {
-    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, 0, "error");
+    await logUsage(agent.id, toolId, tool.providerId, agent.customerId, BigInt(0), "error");
     return NextResponse.json({
       toolResponse: toolResponse.body,
       toolStatus: toolResponse.status,
       tab: {
-        balance: note?.currentAmount ?? 0,
-        pending: note?.pendingAmount ?? 0,
-        limit: creditLine.limitAmount,
-        remaining: creditLine.limitAmount - exposure,
+        balance: (note?.currentAmount ?? BigInt(0)).toString(),
+        pending: (note?.pendingAmount ?? BigInt(0)).toString(),
+        limit: creditLine.limitAmount.toString(),
+        remaining: (creditLine.limitAmount - exposure).toString(),
         version: note?.version ?? 0,
         signature: note?.latestSignature ?? null,
         alert: null,
@@ -137,17 +137,17 @@ export async function POST(req: NextRequest) {
     await logUsage(agent.id, toolId, tool.providerId, agent.customerId, tool.costPerCall, "success");
 
     const totalExposure = result.currentAmount + result.pendingAmount;
-    const utilization = creditLine.limitAmount > 0 ? totalExposure / creditLine.limitAmount : 0;
+    const utilization = creditLine.limitAmount > BigInt(0) ? Number(totalExposure) / Number(creditLine.limitAmount) : 0;
     const alert = utilization >= 1.0 ? "limit_reached" : utilization >= creditLine.alertThreshold ? "threshold_warning" : null;
 
     return NextResponse.json({
       toolResponse: toolResponse.body,
       toolStatus: toolResponse.status,
       tab: {
-        balance: result.currentAmount,
-        pending: result.pendingAmount,
-        limit: creditLine.limitAmount,
-        remaining: creditLine.limitAmount - totalExposure,
+        balance: result.currentAmount.toString(),
+        pending: result.pendingAmount.toString(),
+        limit: creditLine.limitAmount.toString(),
+        remaining: (creditLine.limitAmount - totalExposure).toString(),
         utilization: Math.round(utilization * 100) / 100,
         version: result.version,
         signature: isSelfCustody ? null : (result as { canonicalMessage: string }).canonicalMessage ? undefined : null,
@@ -173,7 +173,7 @@ export async function POST(req: NextRequest) {
 
 async function logUsage(
   agentIdentityId: string, toolId: string, providerId: string,
-  customerId: string, amountCharged: number, outcome: string
+  customerId: string, amountCharged: bigint, outcome: string
 ) {
   await prisma.usageEvent.create({
     data: { agentIdentityId, toolId, providerId, customerId, amountCharged, outcome },

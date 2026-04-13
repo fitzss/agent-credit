@@ -40,7 +40,7 @@ const AGENT_KEY = "auth-demo-key-001";
 const PROVIDER_ID = "auth-demo-bolt-tools-001";
 const OBLIGATION_ID = "auth-demo-obl-001";
 const ROOT_KEY_FILE = path.join(__dirname, "..", ".demo-state", "authority-demo-root.json");
-const TOOL_COST = 0.10; // must match the tool's costPerCall
+const TOOL_COST = BigInt(100_000_000); // must match the tool's costPerCall in nanoCredits
 
 let passed = 0;
 let failed = 0;
@@ -76,14 +76,14 @@ async function get(url: string) {
 
 interface PoolObligation {
   id: string;
-  currentAmount: number;
+  currentAmount: string;
   providerName: string;
 }
 
 interface PoolDelegation {
   id: string;
-  spentSoFar: number;
-  spendCap: number;
+  spentSoFar: string;
+  spendCap: string;
   utilization: number;
   complianceState: string;
   agentLabel: string | null;
@@ -93,7 +93,7 @@ async function getPoolState() {
   const { data } = await get(`${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`);
   const obligation = data.obligations?.find((o: PoolObligation) => o.id === OBLIGATION_ID);
   return {
-    obligationBalance: obligation?.currentAmount ?? 0,
+    obligationBalance: BigInt(obligation?.currentAmount ?? "0"),
     activeDelegations: data.authority?.summary?.activeDelegations ?? 0,
     authorityMode: data.authority?.summary?.authorityMode ?? "unknown",
     findDelegation: (id: string) =>
@@ -118,7 +118,7 @@ async function main() {
   // --- Capture before-state ---
   const before = await getPoolState();
   console.log("Before state:");
-  console.log(`  Obligation balance: $${before.obligationBalance.toFixed(2)}`);
+  console.log(`  Obligation balance: ${before.obligationBalance.toString()} nanoCredits`);
   console.log(`  Active delegations: ${before.activeDelegations}`);
   console.log(`  Authority mode: ${before.authorityMode}`);
 
@@ -129,7 +129,7 @@ async function main() {
   const expiresAt = new Date(Date.now() + 24 * 3600_000).toISOString();
   const delegationMsg = buildDelegationMessage(
     rootPubKey, AGENT_ID, session.publicKey,
-    PROVIDER_ID, "*", 5.0, expiresAt
+    PROVIDER_ID, "*", BigInt(5_000_000_000), expiresAt
   );
   const delegationSig = await signMessage(delegationMsg, rootPrivKey);
 
@@ -139,7 +139,7 @@ async function main() {
     sessionPubKey: session.publicKey,
     scopeProviderIds: PROVIDER_ID,
     scopeToolIds: "*",
-    spendCap: 5.0,
+    spendCap: "5.0",
     expiresAt,
     authSignature: delegationSig,
   });
@@ -228,18 +228,19 @@ async function main() {
   const testDelegation = after.findDelegation(delegationId);
 
   // Delegation spentSoFar should be exactly TOOL_COST (fresh delegation, one call)
-  if (testDelegation && Math.abs(testDelegation.spentSoFar - TOOL_COST) < 0.001) {
-    pass(`Delegation spentSoFar: $0.00 → $${testDelegation.spentSoFar.toFixed(2)} (delta: +$${TOOL_COST.toFixed(2)})`);
+  const spentSoFar = BigInt(testDelegation?.spentSoFar ?? "0");
+  if (testDelegation && spentSoFar === TOOL_COST) {
+    pass(`Delegation spentSoFar: 0 → ${spentSoFar.toString()} (delta: +${TOOL_COST.toString()})`);
   } else {
-    fail("Delegation spentSoFar delta", `expected $${TOOL_COST.toFixed(2)}, got $${testDelegation?.spentSoFar?.toFixed(2) ?? "?"}`);
+    fail("Delegation spentSoFar delta", `expected ${TOOL_COST.toString()}, got ${spentSoFar.toString()}`);
   }
 
   // Obligation balance should have increased by exactly TOOL_COST
   const obligationDelta = after.obligationBalance - before.obligationBalance;
-  if (Math.abs(obligationDelta - TOOL_COST) < 0.001) {
-    pass(`Obligation balance: $${before.obligationBalance.toFixed(2)} → $${after.obligationBalance.toFixed(2)} (delta: +$${obligationDelta.toFixed(2)})`);
+  if (obligationDelta === TOOL_COST) {
+    pass(`Obligation balance: ${before.obligationBalance.toString()} → ${after.obligationBalance.toString()} (delta: +${obligationDelta.toString()})`);
   } else {
-    fail("Obligation balance delta", `expected +$${TOOL_COST.toFixed(2)}, got +$${obligationDelta.toFixed(2)}`);
+    fail("Obligation balance delta", `expected +${TOOL_COST.toString()}, got +${obligationDelta.toString()}`);
   }
 
   // Pool summary should show agent label on the delegation
@@ -255,7 +256,7 @@ async function main() {
   const afterCleanup = await getPoolState();
 
   console.log("\nAfter state (test delegation revoked):");
-  console.log(`  Obligation balance: $${afterCleanup.obligationBalance.toFixed(2)}`);
+  console.log(`  Obligation balance: ${afterCleanup.obligationBalance.toString()} nanoCredits`);
   console.log(`  Active delegations: ${afterCleanup.activeDelegations}`);
 
   // --- Summary ---

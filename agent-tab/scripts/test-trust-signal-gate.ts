@@ -87,7 +87,7 @@ async function buildDelegationBody(
     session.publicKey,
     "*",
     "*",
-    5.0,
+    BigInt(5_000_000_000),
     expiresAt
   );
   const authSignature = await signMessage(authMessage, custKeys.privateKey);
@@ -97,7 +97,7 @@ async function buildDelegationBody(
     sessionPubKey: session.publicKey,
     scopeProviderIds: "*",
     scopeToolIds: "*",
-    spendCap: 5.0,
+    spendCap: "5.0",
     expiresAt,
     authSignature,
     ...extra,

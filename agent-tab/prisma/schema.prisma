@@ -65,7 +65,7 @@ model Tool {
   name                String
   description         String        @default("")
   endpoint            String
-  costPerCall         Float
+  costPerCall         BigInt        // nanoCredits
   status              String        @default("active")
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
@@ -78,7 +78,7 @@ model CreditLine {
   id                  String        @id @default(uuid())
   providerId          String
   customerId          String
-  limitAmount         Float
+  limitAmount         BigInt        // nanoCredits
   alertThreshold      Float         @default(0.8)
   dueDays             Int           @default(30)
   status              String        @default("active")
@@ -98,8 +98,8 @@ model Delegation {
   sessionPubKey       String        // hex-encoded session public key
   scopeProviderIds    String        @default("*") // comma-separated or "*"
   scopeToolIds        String        @default("*") // comma-separated or "*"
-  spendCap            Float         // max cumulative spend under this delegation
-  spentSoFar          Float         @default(0)
+  spendCap            BigInt        // nanoCredits — max cumulative spend under this delegation
+  spentSoFar          BigInt        @default(0) // nanoCredits
   expiresAt           DateTime
   authMessage         String        // canonical delegation message signed by root key
   authSignature       String        // root key's signature on authMessage
@@ -115,8 +115,8 @@ model ObligationState {
   id                  String        @id @default(uuid())
   providerId          String
   customerId          String
-  currentAmount       Float         @default(0) // total committed A→B debt
-  pendingAmount       Float         @default(0) // proposed but unsigned
+  currentAmount       BigInt        @default(0) // nanoCredits — total committed A→B debt
+  pendingAmount       BigInt        @default(0) // nanoCredits — proposed but unsigned
   version             Int           @default(0)
   debtorPubKey        String        @default("")
   creditorPubKey      String        @default("")
@@ -141,9 +141,9 @@ model ObligationUpdate {
   delegationId        String?       // which delegation authorized this (null = tracker-managed or manual)
   agentIdentityId     String?       // which authenticated agent advanced this debt
   version             Int
-  previousAmount      Float
-  newAmount           Float
-  delta               Float
+  previousAmount      BigInt        // nanoCredits
+  newAmount           BigInt        // nanoCredits
+  delta               BigInt        // nanoCredits
   canonicalMessage    String
   signature           String        @default("") // session or root signature
   signatureStatus     String        @default("signed") // signed | pending | rejected
@@ -183,7 +183,7 @@ model UsageEvent {
   toolId              String
   providerId          String
   customerId          String
-  amountCharged       Float
+  amountCharged       BigInt        // nanoCredits
   timestamp           DateTime      @default(now())
   requestRef          String?
   outcome             String        @default("success")
@@ -197,7 +197,7 @@ model UsageEvent {
 model SettlementEvent {
   id                  String        @id @default(uuid())
   obligationStateId   String
-  amount              Float
+  amount              BigInt        // nanoCredits
   method              String        @default("manual")
   status              String        @default("completed")
   redemptionTxId      String?       @unique // on-chain tx ID for dedup (null for manual settlements)
@@ -276,7 +276,7 @@ model DebtTransfer {
   id                  String          @id @default(uuid())
   fromObligationId    String
   toObligationId      String
-  amountCredits       Float           // transfer amount in credits (matches obligation units)
+  amountCredits       BigInt          // nanoCredits — transfer amount
   amountNanoErg       BigInt          // same amount in chain-native units for audit
   debtorPubKey        String          // A's key (same for both obligations)
   fromCreditorPubKey  String          // B's key

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { formatCredits } from "@/lib/credits";
 
 interface AgentIdentity {
   id: string;
@@ -15,7 +16,7 @@ interface AgentIdentity {
 interface CreditLine {
   id: string;
   providerId: string;
-  limitAmount: number;
+  limitAmount: string;
   alertThreshold: number;
   status: string;
   provider: { id: string; name: string };
@@ -24,7 +25,7 @@ interface CreditLine {
 interface Obligation {
   id: string;
   providerId: string;
-  currentAmount: number;
+  currentAmount: string;
   version: number;
   settlementStatus: string;
   latestSignature: string | null;
@@ -34,7 +35,7 @@ interface Obligation {
 interface UsageEvent {
   id: string;
   providerId: string;
-  amountCharged: number;
+  amountCharged: string;
   timestamp: string;
   outcome: string;
   tool: { name: string };
@@ -45,7 +46,7 @@ interface ToolInfo {
   id: string;
   name: string;
   description: string;
-  costPerCall: number;
+  costPerCall: string;
   status: string;
   providerId: string;
   provider: { name: string };
@@ -55,9 +56,9 @@ interface ProxyResult {
   toolResponse: Record<string, unknown>;
   toolStatus: number;
   tab: {
-    balance: number;
-    limit: number;
-    remaining: number;
+    balance: string;
+    limit: string;
+    remaining: string;
     utilization: number;
     version: number;
     signature: string | null;
@@ -119,12 +120,12 @@ export default function CustomerDashboard() {
 
   useEffect(load, [load]);
 
-  const settle = async (providerId: string, amount: number) => {
+  const settle = async (providerId: string, amount: bigint) => {
     setSettling(providerId);
     await fetch("/api/settle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ providerId, customerId: id, amount, method: "manual" }),
+      body: JSON.stringify({ providerId, customerId: id, amount: amount.toString(), method: "manual" }),
     });
     load();
     setSettling(null);
@@ -221,8 +222,8 @@ export default function CustomerDashboard() {
 
   if (!customer) return <div className="text-zinc-500">Loading...</div>;
 
-  const totalOwed = customer.obligationStates.reduce((s, o) => s + o.currentAmount, 0);
-  const totalLimit = customer.creditLines.reduce((s, l) => s + l.limitAmount, 0);
+  const totalOwed = customer.obligationStates.reduce((s, o) => s + BigInt(o.currentAmount), BigInt(0));
+  const totalLimit = customer.creditLines.reduce((s, l) => s + BigInt(l.limitAmount), BigInt(0));
   const totalRemaining = totalLimit - totalOwed;
 
   return (
@@ -247,31 +248,38 @@ export default function CustomerDashboard() {
 
       {/* Summary */}
       <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Current Balance" value={`$${totalOwed.toFixed(2)}`} highlight />
-        <StatCard label="Total Limit" value={`$${totalLimit.toFixed(2)}`} />
-        <StatCard label="Remaining" value={`$${totalRemaining.toFixed(2)}`} />
+        <StatCard label="Current Balance" value={`$${formatCredits(totalOwed)}`} highlight />
+        <StatCard label="Total Limit" value={`$${formatCredits(totalLimit)}`} />
+        <StatCard label="Remaining" value={`$${formatCredits(totalRemaining)}`} />
         <StatCard label="Agents" value={customer.agentIdentities.length.toString()} />
       </div>
 
       {/* Utilization Bar */}
-      {totalLimit > 0 && (
+      {totalLimit > BigInt(0) && (
         <div>
-          <div className="flex justify-between text-sm text-zinc-400 mb-1">
-            <span>Credit Utilization</span>
-            <span>{((totalOwed / totalLimit) * 100).toFixed(0)}%</span>
-          </div>
-          <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${
-                totalOwed / totalLimit >= 0.9
-                  ? "bg-red-500"
-                  : totalOwed / totalLimit >= 0.7
-                    ? "bg-yellow-500"
-                    : "bg-green-500"
-              }`}
-              style={{ width: `${Math.min((totalOwed / totalLimit) * 100, 100)}%` }}
-            />
-          </div>
+          {(() => {
+            const utilRatio = Number(totalOwed) / Number(totalLimit);
+            return (
+              <>
+                <div className="flex justify-between text-sm text-zinc-400 mb-1">
+                  <span>Credit Utilization</span>
+                  <span>{(utilRatio * 100).toFixed(0)}%</span>
+                </div>
+                <div className="h-3 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      utilRatio >= 0.9
+                        ? "bg-red-500"
+                        : utilRatio >= 0.7
+                          ? "bg-yellow-500"
+                          : "bg-green-500"
+                    }`}
+                    style={{ width: `${Math.min(utilRatio * 100, 100)}%` }}
+                  />
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -306,7 +314,7 @@ export default function CustomerDashboard() {
                   return providerIds.includes(t.providerId) && t.status === "active";
                 }).map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name} ({t.provider.name}) — ${t.costPerCall.toFixed(2)}/call
+                    {t.name} ({t.provider.name}) — ${formatCredits(BigInt(t.costPerCall))}/call
                   </option>
                 ))}
               </select>
@@ -357,7 +365,7 @@ export default function CustomerDashboard() {
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-green-400" />
                     <span className="text-sm font-medium text-green-400">
-                      Service delivered — charged ${(tools.find((t) => t.id === tryTool)?.costPerCall ?? 0).toFixed(2)}
+                      Service delivered — charged ${formatCredits(BigInt(tools.find((t) => t.id === tryTool)?.costPerCall ?? "0"))}
                     </span>
                   </div>
                   <p className="text-xs text-green-400/70 mt-1">
@@ -383,16 +391,16 @@ export default function CustomerDashboard() {
                 <div className={`border rounded p-3 ${tryResult.tab.charged === false ? "border-zinc-800" : "border-green-900"}`}>
                   <p className="text-xs text-zinc-500">Charged</p>
                   <p className={`font-mono text-lg mt-1 ${tryResult.tab.charged === false ? "text-zinc-500" : "text-green-400"}`}>
-                    {tryResult.tab.charged === false ? "$0.00" : `+$${(tools.find((t) => t.id === tryTool)?.costPerCall ?? 0).toFixed(2)}`}
+                    {tryResult.tab.charged === false ? "$0.00" : `+$${formatCredits(BigInt(tools.find((t) => t.id === tryTool)?.costPerCall ?? "0"))}`}
                   </p>
                 </div>
                 <div className="border border-zinc-700 rounded p-3">
                   <p className="text-xs text-zinc-500">Balance</p>
-                  <p className="font-mono text-lg mt-1">${tryResult.tab.balance.toFixed(2)}</p>
+                  <p className="font-mono text-lg mt-1">${formatCredits(BigInt(tryResult.tab.balance))}</p>
                 </div>
                 <div className="border border-zinc-700 rounded p-3">
                   <p className="text-xs text-zinc-500">Remaining</p>
-                  <p className="font-mono text-lg mt-1">${tryResult.tab.remaining.toFixed(2)}</p>
+                  <p className="font-mono text-lg mt-1">${formatCredits(BigInt(tryResult.tab.remaining))}</p>
                 </div>
                 <div className="border border-zinc-700 rounded p-3">
                   <p className="text-xs text-zinc-500">Version</p>
@@ -463,9 +471,10 @@ export default function CustomerDashboard() {
         <div className="space-y-3">
           {customer.creditLines.map((line) => {
             const obl = customer.obligationStates.find((o) => o.providerId === line.providerId);
-            const balance = obl?.currentAmount ?? 0;
-            const remaining = line.limitAmount - balance;
-            const util = line.limitAmount > 0 ? balance / line.limitAmount : 0;
+            const balance = BigInt(obl?.currentAmount ?? "0");
+            const limitBig = BigInt(line.limitAmount);
+            const remaining = limitBig - balance;
+            const util = limitBig > BigInt(0) ? Number(balance) / Number(limitBig) : 0;
             const alertActive = util >= line.alertThreshold;
             return (
               <div key={line.id} className={`border rounded-lg p-5 ${alertActive ? "border-yellow-700" : "border-zinc-800"}`}>
@@ -492,16 +501,16 @@ export default function CustomerDashboard() {
                     <div className="flex gap-6 mt-2 text-sm">
                       <div>
                         <span className="text-zinc-500">Balance: </span>
-                        <span className="font-mono">${balance.toFixed(2)}</span>
+                        <span className="font-mono">${formatCredits(balance)}</span>
                       </div>
                       <div>
                         <span className="text-zinc-500">Limit: </span>
-                        <span className="font-mono">${line.limitAmount.toFixed(2)}</span>
+                        <span className="font-mono">${formatCredits(limitBig)}</span>
                       </div>
                       <div>
                         <span className="text-zinc-500">Remaining: </span>
-                        <span className={`font-mono ${remaining < 10 ? "text-yellow-400" : ""}`}>
-                          ${remaining.toFixed(2)}
+                        <span className={`font-mono ${remaining < BigInt(10_000_000_000) ? "text-yellow-400" : ""}`}>
+                          ${formatCredits(remaining)}
                         </span>
                       </div>
                       {obl?.latestSignature && (
@@ -529,10 +538,10 @@ export default function CustomerDashboard() {
                   </div>
                   <button
                     onClick={() => settle(line.providerId, balance)}
-                    disabled={balance <= 0 || settling === line.providerId}
+                    disabled={balance <= BigInt(0) || settling === line.providerId}
                     className="px-4 py-2 bg-white text-black rounded text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    {settling === line.providerId ? "Settling..." : `Settle $${balance.toFixed(2)}`}
+                    {settling === line.providerId ? "Settling..." : `Settle $${formatCredits(balance)}`}
                   </button>
                 </div>
               </div>
@@ -627,7 +636,7 @@ export default function CustomerDashboard() {
                   </td>
                   <td className="px-4 py-3">{e.agentIdentity.label}</td>
                   <td className="px-4 py-3">{e.tool.name}</td>
-                  <td className="px-4 py-3 text-right font-mono">${e.amountCharged.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-mono">${formatCredits(BigInt(e.amountCharged))}</td>
                   <td className="px-4 py-3 text-center">
                     <StatusBadge status={e.outcome} />
                   </td>
