@@ -38,3 +38,4 @@ Thumbs.db
 # Claude Code memory (local to each machine)
 .claude/
 .chaincash-secrets/
+agent-tab/target/
