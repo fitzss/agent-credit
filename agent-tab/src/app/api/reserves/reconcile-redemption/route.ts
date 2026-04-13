@@ -19,7 +19,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await reconcileRedemption({
-      reserveId, obligationId, redemptionTxId, grossRedeemNanoErg, feeNanoErg, netPayoutNanoErg,
+      reserveId, obligationId, redemptionTxId,
+      grossRedeemNanoErg: BigInt(grossRedeemNanoErg),
+      feeNanoErg: feeNanoErg ? BigInt(feeNanoErg) : undefined,
+      netPayoutNanoErg: netPayoutNanoErg ? BigInt(netPayoutNanoErg) : undefined,
     });
     return NextResponse.json(result);
   } catch (e: any) {
