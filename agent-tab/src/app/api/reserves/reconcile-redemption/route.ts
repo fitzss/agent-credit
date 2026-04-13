@@ -27,7 +27,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (e: any) {
     if (e instanceof ReconcileError) {
-      return NextResponse.json({ error: e.message, ...e.detail }, { status: e.statusCode });
+      // Serialize BigInt fields in error detail (handles nested objects)
+      const serializeBigInts = (obj: Record<string, unknown>): Record<string, unknown> =>
+        Object.fromEntries(Object.entries(obj).map(([k, v]) => [k,
+          typeof v === "bigint" ? v.toString()
+          : v && typeof v === "object" && !Array.isArray(v) ? serializeBigInts(v as Record<string, unknown>)
+          : v
+        ]));
+      const detail = e.detail ? serializeBigInts(e.detail) : {};
+      return NextResponse.json({ error: e.message, ...detail }, { status: e.statusCode });
     }
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
