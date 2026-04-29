@@ -47,6 +47,11 @@ interface AgentEntry {
   customerId: string;
 }
 
+interface ProviderEntry {
+  id: string;
+  name: string;
+}
+
 interface AuthoritySummary {
   authorityMode: string;
   activeDelegations: number;
@@ -68,6 +73,7 @@ interface PoolSummary {
   poolHealth: PoolHealth;
   authority: Authority;
   agents: AgentEntry[];
+  providers: ProviderEntry[];
   tracker: TrackerBoxData[];
   settlements: SettlementData[];
   recentUsage: ActivityEvent[];
@@ -433,9 +439,9 @@ export default function PoolDetail() {
                   className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
                 >
                   <option value="*">All providers</option>
-                  {obligations.map((o) => (
-                    <option key={o.providerId} value={o.providerId}>
-                      {o.providerName}
+                  {pool.providers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
                     </option>
                   ))}
                 </select>

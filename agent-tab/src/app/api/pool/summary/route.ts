@@ -374,6 +374,13 @@ export async function GET(req: NextRequest) {
     timestamp: e.timestamp.toISOString(),
   }));
 
+  // Active providers — populates the Create Delegation form's Provider Scope dropdown
+  const providers = await prisma.provider.findMany({
+    where: { status: "active" },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+
   return NextResponse.json({
     reserves: reserves.map((r) => ({
       id: r.id,
@@ -398,6 +405,7 @@ export async function GET(req: NextRequest) {
       summary: authoritySummary,
     },
     agents,
+    providers,
     tracker: trackerData,
     settlements: settlementsData,
     recentUsage: recentUsageData,
