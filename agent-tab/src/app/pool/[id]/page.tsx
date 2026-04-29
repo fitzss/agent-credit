@@ -16,6 +16,7 @@ import {
   TrackerStateCard,
   SettlementHistory,
   ActivityFeed,
+  DemoQuickstart,
 } from "@/components";
 import type {
   ObligationRow,
@@ -313,6 +314,9 @@ export default function PoolDetail() {
         onRedeem={redeemObligation}
         onDismissResult={() => setRedeemResult(null)}
       />
+
+      {/* Bounded-buyer demo runbook — only on the seeded authority demo pool */}
+      {reserve?.id === "auth-demo-reserve-001" && <DemoQuickstart />}
 
       {/* Agent Authority */}
       <div>

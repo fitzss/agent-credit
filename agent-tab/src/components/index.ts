@@ -24,3 +24,4 @@ export { SettlementHistory } from "./SettlementHistory";
 export type { SettlementData } from "./SettlementHistory";
 export { ActivityFeed } from "./ActivityFeed";
 export type { ActivityEvent } from "./ActivityFeed";
+export { DemoQuickstart } from "./DemoQuickstart";
