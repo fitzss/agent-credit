@@ -30,8 +30,13 @@ const outcomeLabels: Record<string, string> = {
 };
 
 function OutcomeBadge({ outcome }: { outcome: string }) {
+  const tooltip =
+    outcome === "denied" || outcome === "error"
+      ? "No obligation update committed; delegation state did not advance."
+      : undefined;
   return (
     <span
+      title={tooltip}
       className={`inline-block px-2 py-0.5 text-xs rounded-full ${outcomeStyles[outcome] || "bg-zinc-800 text-zinc-400"}`}
     >
       {outcomeLabels[outcome] || outcome}
@@ -74,15 +79,25 @@ export function ActivityFeed({ events }: Props) {
                     {e.agentLabel ?? e.agentIdentityId.substring(0, 12) + "…"}
                   </td>
                   <td className="px-4 py-3 text-zinc-300">
-                    {e.toolName ?? "—"}
+                    <div>{e.toolName ?? "—"}</div>
                     {e.providerName && (
-                      <span className="text-zinc-500"> &middot; {e.providerName}</span>
+                      <div className="text-xs text-zinc-500 mt-0.5">
+                        {e.providerName}
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-3 font-mono">
-                    {e.outcome === "success"
-                      ? formatCredits(BigInt(e.amountCharged))
-                      : <span className="text-zinc-500">—</span>}
+                    {e.outcome === "success" ? (
+                      formatCredits(BigInt(e.amountCharged))
+                    ) : e.outcome === "denied" ? (
+                      <span className="text-zinc-500">no charge</span>
+                    ) : e.outcome === "error" ? (
+                      <span className="text-zinc-500">
+                        no charge (upstream error)
+                      </span>
+                    ) : (
+                      <span className="text-zinc-500">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <OutcomeBadge outcome={e.outcome} />
