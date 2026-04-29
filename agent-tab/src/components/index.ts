@@ -22,3 +22,5 @@ export { TrackerStateCard } from "./TrackerStateCard";
 export type { TrackerBoxData, TrackerEntry } from "./TrackerStateCard";
 export { SettlementHistory } from "./SettlementHistory";
 export type { SettlementData } from "./SettlementHistory";
+export { ActivityFeed } from "./ActivityFeed";
+export type { ActivityEvent } from "./ActivityFeed";

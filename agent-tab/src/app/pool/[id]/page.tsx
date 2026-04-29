@@ -15,6 +15,7 @@ import {
   ReserveCard,
   TrackerStateCard,
   SettlementHistory,
+  ActivityFeed,
 } from "@/components";
 import type {
   ObligationRow,
@@ -22,6 +23,7 @@ import type {
   ReserveData,
   TrackerBoxData,
   SettlementData,
+  ActivityEvent,
 } from "@/components";
 
 /**
@@ -67,6 +69,7 @@ interface PoolSummary {
   agents: AgentEntry[];
   tracker: TrackerBoxData[];
   settlements: SettlementData[];
+  recentUsage: ActivityEvent[];
 }
 
 export default function PoolDetail() {
@@ -541,6 +544,9 @@ export default function PoolDetail() {
           </>
         )}
       </div>
+
+      {/* Recent Agent Activity */}
+      <ActivityFeed events={pool.recentUsage ?? []} />
 
       {/* Tracker State */}
       <TrackerStateCard tracker={pool.tracker} />

@@ -349,6 +349,31 @@ export async function GET(req: NextRequest) {
     timestamp: s.timestamp.toISOString(),
   }));
 
+  // Recent agent activity (last 25 proxy calls — success, denied, error)
+  const recentUsage = await prisma.usageEvent.findMany({
+    where: { customerId: { in: poolCustomerIds } },
+    include: {
+      agentIdentity: { select: { id: true, label: true } },
+      tool: { select: { id: true, name: true } },
+      provider: { select: { id: true, name: true } },
+    },
+    orderBy: { timestamp: "desc" },
+    take: 25,
+  });
+
+  const recentUsageData = recentUsage.map((e) => ({
+    id: e.id,
+    agentIdentityId: e.agentIdentityId,
+    agentLabel: e.agentIdentity?.label ?? null,
+    toolId: e.toolId,
+    toolName: e.tool?.name ?? null,
+    providerId: e.providerId,
+    providerName: e.provider?.name ?? null,
+    amountCharged: e.amountCharged.toString(),
+    outcome: e.outcome,
+    timestamp: e.timestamp.toISOString(),
+  }));
+
   return NextResponse.json({
     reserves: reserves.map((r) => ({
       id: r.id,
@@ -375,5 +400,6 @@ export async function GET(req: NextRequest) {
     agents,
     tracker: trackerData,
     settlements: settlementsData,
+    recentUsage: recentUsageData,
   });
 }
