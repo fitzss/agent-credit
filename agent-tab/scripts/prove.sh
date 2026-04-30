@@ -43,9 +43,9 @@ if ! curl -s --max-time 5 "$AGENT/api/reserves" | grep -q '"id"' 2>/dev/null; th
 fi
 echo "  ✓ Agent Tab responding"
 
-# Detect authority-demo fixture
+# Detect authority-demo fixture (DB-direct; /api/pool/summary now requires a session)
 AUTHORITY_PRESENT=false
-if curl -s --max-time 5 "$AGENT/api/pool/summary" | grep -q "auth-demo" 2>/dev/null; then
+if npx tsx scripts/lib/check-auth-demo-fixture.ts >/dev/null 2>&1; then
   AUTHORITY_PRESENT=true
   echo "  ✓ Authority demo fixture detected"
 else

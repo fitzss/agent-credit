@@ -25,6 +25,7 @@
 
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
+import { operatorCookieHeader } from "./lib/test-session";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -69,8 +70,8 @@ async function del(url: string, body: unknown) {
   return { status: res.status, data: await res.json() };
 }
 
-async function get(url: string) {
-  const res = await fetch(url);
+async function get(url: string, headers?: Record<string, string>) {
+  const res = await fetch(url, { headers });
   return { status: res.status, data: await res.json() };
 }
 
@@ -89,8 +90,11 @@ interface PoolDelegation {
   agentLabel: string | null;
 }
 
-async function getPoolState() {
-  const { data } = await get(`${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`);
+async function getPoolState(cookie: string) {
+  const { data } = await get(
+    `${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`,
+    { Cookie: cookie },
+  );
   const obligation = data.obligations?.find((o: PoolObligation) => o.id === OBLIGATION_ID);
   return {
     obligationBalance: BigInt(obligation?.currentAmount ?? "0"),
@@ -115,8 +119,12 @@ async function main() {
   const rootPubKey: string = rootKeyData.publicKey;
   const rootPrivKey: string = rootKeyData.privateKey;
 
+  // Slice 3: /api/pool/summary now requires a session. Mint an operator
+  // cookie locally; same JWT shape a real magic-link login produces.
+  const COOKIE = await operatorCookieHeader(prisma);
+
   // --- Capture before-state ---
-  const before = await getPoolState();
+  const before = await getPoolState(COOKIE);
   console.log("Before state:");
   console.log(`  Obligation balance: ${before.obligationBalance.toString()} nanoCredits`);
   console.log(`  Active delegations: ${before.activeDelegations}`);
@@ -153,7 +161,7 @@ async function main() {
   const delegationId = createData.delegationId;
 
   // Verify delegation count incremented
-  const afterCreate = await getPoolState();
+  const afterCreate = await getPoolState(COOKIE);
   if (afterCreate.activeDelegations === before.activeDelegations + 1) {
     pass(`Active delegations: ${before.activeDelegations} → ${afterCreate.activeDelegations}`);
   } else {
@@ -224,7 +232,7 @@ async function main() {
   // --- Step 4: Assert exact deltas ---
   console.log("\nStep 4: Verify exact deltas");
 
-  const after = await getPoolState();
+  const after = await getPoolState(COOKIE);
   const testDelegation = after.findDelegation(delegationId);
 
   // Delegation spentSoFar should be exactly TOOL_COST (fresh delegation, one call)
@@ -253,7 +261,7 @@ async function main() {
   // --- Cleanup: revoke test delegation ---
   await del(`${BASE}/api/delegations`, { id: delegationId });
   await prisma.$disconnect();
-  const afterCleanup = await getPoolState();
+  const afterCleanup = await getPoolState(COOKIE);
 
   console.log("\nAfter state (test delegation revoked):");
   console.log(`  Obligation balance: ${afterCleanup.obligationBalance.toString()} nanoCredits`);

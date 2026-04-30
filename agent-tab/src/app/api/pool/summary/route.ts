@@ -1,12 +1,24 @@
 import { prisma } from "@/lib/prisma";
 import { formatCredits, nanoCreditsToNanoErg } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
+import {
+  requireSession,
+  requireCustomerOwned,
+  authErrorResponse,
+} from "@/lib/auth";
 
 /**
  * Pool summary endpoint (Phase 1a+b).
  *
  * ?reserveId=X  → full detail for a single pool (scoped to that reserve's customer)
  * (no param)    → lightweight list of active reserves for the pool selector
+ *
+ * Auth (slice 3):
+ *   - requireSession first; unauthenticated → JSON 401, no DB lookup.
+ *   - Selector mode: operator sees all; customer sees only reserves whose
+ *     customer.ownerUserId === user.id.
+ *   - Detail mode: load reserve → 404 if missing → requireCustomerOwned
+ *     (operator bypass inside) → 403 if mismatch.
  */
 
 type SettlementReadiness =
@@ -19,12 +31,23 @@ type SettlementReadiness =
 type PoolStatus = "healthy" | "low-coverage" | "depleted" | "offline";
 
 export async function GET(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const reserveId = req.nextUrl.searchParams.get("reserveId");
 
   // --- Selector mode: return lightweight reserve list ---
   if (!reserveId) {
+    const where =
+      user.role === "operator"
+        ? { lifecycle: "active" }
+        : { lifecycle: "active", customer: { ownerUserId: user.id } };
     const allReserves = await prisma.reserve.findMany({
-      where: { lifecycle: "active" },
+      where,
       include: { customer: true },
       orderBy: { updatedAt: "desc" },
     });
@@ -60,28 +83,13 @@ export async function GET(req: NextRequest) {
   });
 
   if (reserves.length === 0) {
-    return NextResponse.json({
-      reserves: [],
-      obligations: [],
-      poolHealth: {
-        totalReserveValueNanoErg: "0",
-        totalObligationsNanoCredits: "0",
-        coverageRatio: 0,
-        poolStatus: "offline" as PoolStatus,
-      },
-      authority: {
-        delegations: [],
-        summary: {
-          authorityMode: "offline",
-          activeDelegations: 0,
-          approachingCap: 0,
-          approachingExpiry: 0,
-          exhausted: 0,
-          expired: 0,
-          revoked: 0,
-        },
-      },
-    });
+    return NextResponse.json({ error: "reserve not found" }, { status: 404 });
+  }
+
+  try {
+    await requireCustomerOwned(reserves[0].customerId);
+  } catch (e) {
+    return authErrorResponse(e);
   }
 
   // All customer IDs that have active reserves

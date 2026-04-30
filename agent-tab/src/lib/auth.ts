@@ -2,6 +2,7 @@ import type { NextAuthOptions, Session } from "next-auth";
 import { getServerSession } from "next-auth/next";
 import EmailProvider from "next-auth/providers/email";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 const isProd = process.env.NODE_ENV === "production";
@@ -152,4 +153,13 @@ export async function requireCustomerOwned(customerId: string): Promise<SessionU
     throw new HttpError(403, "customer not owned by current user");
   }
   return user;
+}
+
+// Convert HttpError thrown by require* helpers into a JSON NextResponse.
+// Re-throws anything else so the framework can surface it as a 500.
+export function authErrorResponse(e: unknown): NextResponse {
+  if (e instanceof HttpError) {
+    return NextResponse.json({ error: e.message }, { status: e.status });
+  }
+  throw e;
 }
