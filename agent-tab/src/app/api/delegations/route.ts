@@ -3,6 +3,7 @@ import { parseCredits } from "@/lib/credits";
 import { tracker, TrackerError } from "@/lib/tracker/service";
 import { validateTrustSignal, TrustSignalError } from "@/lib/adapters/trust-signal";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
 
 export async function GET(req: NextRequest) {
   const customerId = req.nextUrl.searchParams.get("customerId");
@@ -10,7 +11,7 @@ export async function GET(req: NextRequest) {
 
   if (debtorPubKey) {
     const delegations = await tracker.getDelegations(debtorPubKey);
-    return NextResponse.json(delegations);
+    return NextResponse.json(toJsonSafe(delegations));
   }
 
   // App-layer convenience: look up by customerId
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest) {
     const customer = await prisma.customer.findUnique({ where: { id: customerId } });
     if (!customer) return NextResponse.json([]);
     const delegations = await tracker.getDelegations(customer.publicKey);
-    return NextResponse.json(delegations);
+    return NextResponse.json(toJsonSafe(delegations));
   }
 
   return NextResponse.json({ error: "Provide customerId or debtorPubKey" }, { status: 400 });
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
       expiresAt: body.expiresAt,
       authSignature: body.authSignature,
     });
-    return NextResponse.json(result, { status: 201 });
+    return NextResponse.json(toJsonSafe(result), { status: 201 });
   } catch (e) {
     if (e instanceof TrackerError) {
       return NextResponse.json({ error: e.message, code: e.code }, { status: 403 });
@@ -107,5 +108,5 @@ export async function DELETE(req: NextRequest) {
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: "Missing delegation id" }, { status: 400 });
   const result = await tracker.revokeDelegation(id);
-  return NextResponse.json(result);
+  return NextResponse.json(toJsonSafe(result));
 }

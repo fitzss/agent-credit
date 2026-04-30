@@ -1,5 +1,6 @@
 import { tracker } from "@/lib/tracker/service";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
 
 export async function GET(
   _req: NextRequest,
@@ -7,5 +8,5 @@ export async function GET(
 ) {
   const { id } = await params;
   const history = await tracker.getNoteHistory(id);
-  return NextResponse.json(history);
+  return NextResponse.json(toJsonSafe(history));
 }

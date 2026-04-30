@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
 
 export async function GET(req: NextRequest) {
   const providerId = req.nextUrl.searchParams.get("providerId");
@@ -17,5 +18,5 @@ export async function GET(req: NextRequest) {
     take: limit,
   });
 
-  return NextResponse.json(events);
+  return NextResponse.json(toJsonSafe(events));
 }

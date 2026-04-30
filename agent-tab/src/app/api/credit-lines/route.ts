@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { parseCredits } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
 
 export async function GET(req: NextRequest) {
   const providerId = req.nextUrl.searchParams.get("providerId");
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
     include: { provider: true, customer: true },
     orderBy: { createdAt: "desc" },
   });
-  return NextResponse.json(lines);
+  return NextResponse.json(toJsonSafe(lines));
 }
 
 export async function POST(req: NextRequest) {
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
     }),
   ]);
 
-  return NextResponse.json(creditLine, { status: 201 });
+  return NextResponse.json(toJsonSafe(creditLine), { status: 201 });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -57,5 +58,5 @@ export async function PATCH(req: NextRequest) {
     where: { id },
     data,
   });
-  return NextResponse.json(updated);
+  return NextResponse.json(toJsonSafe(updated));
 }

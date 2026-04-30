@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { generateKeypair } from "@/lib/crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
 
 export async function GET() {
   const customers = await prisma.customer.findMany({
@@ -8,7 +9,7 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
   });
   const safe = customers.map(({ privateKey: _, ...c }) => c);
-  return NextResponse.json(safe);
+  return NextResponse.json(toJsonSafe(safe));
 }
 
 export async function POST(req: NextRequest) {
@@ -23,5 +24,5 @@ export async function POST(req: NextRequest) {
     },
   });
   const { privateKey: _, ...safe } = customer;
-  return NextResponse.json(safe, { status: 201 });
+  return NextResponse.json(toJsonSafe(safe), { status: 201 });
 }
