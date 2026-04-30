@@ -155,6 +155,20 @@ export async function requireCustomerOwned(customerId: string): Promise<SessionU
   return user;
 }
 
+// Customer IDs that the current user owns. Returns null for operators
+// (meaning "no scope filter — see everything"). Returns possibly-empty
+// array for customer-role users.
+export async function ownedCustomerIds(
+  user: SessionUser,
+): Promise<string[] | null> {
+  if (user.role === "operator") return null;
+  const customers = await prisma.customer.findMany({
+    where: { ownerUserId: user.id },
+    select: { id: true },
+  });
+  return customers.map((c) => c.id);
+}
+
 // Convert HttpError thrown by require* helpers into a JSON NextResponse.
 // Re-throws anything else so the framework can surface it as a 500.
 export function authErrorResponse(e: unknown): NextResponse {
