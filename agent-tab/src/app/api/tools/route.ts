@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { parseCredits } from "@/lib/credits";
 import { NextRequest, NextResponse } from "next/server";
 import { toJsonSafe } from "@/lib/json-safe";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
   const providerId = req.nextUrl.searchParams.get("providerId");
@@ -15,6 +16,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const tool = await prisma.tool.create({
     data: {

@@ -2,8 +2,23 @@ import { prisma } from "@/lib/prisma";
 import { generateKeypair, buildCanonicalMessage, signMessage } from "@/lib/crypto";
 import { buildDelegationMessageV1 } from "@/lib/tracker/delegation";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "seed disabled in production" },
+      { status: 403 },
+    );
+  }
+
+  let operator;
+  try {
+    operator = await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const baseUrl = new URL(req.url).origin;
 
   // Clean existing data (order matters for foreign keys)
@@ -76,6 +91,7 @@ export async function POST(req: NextRequest) {
       publicKey: custKeys.publicKey,
       privateKey: custKeys.privateKey,
       contactEmail: "team@acme.dev",
+      ownerUserId: operator.id,
     },
   });
 
@@ -237,6 +253,7 @@ export async function POST(req: NextRequest) {
       privateKey: "", // empty — self-custody
       signingMode: "self-custody",
       contactEmail: "ops@boltlabs.io",
+      ownerUserId: operator.id,
     },
   });
 
