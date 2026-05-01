@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { toJsonSafe } from "@/lib/json-safe";
 import {
   requireSession,
+  requireOperator,
   requireCustomerOwned,
   ownedCustomerIds,
   authErrorResponse,
@@ -47,6 +48,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
 
   // Create credit line and initialize obligation state atomically
@@ -80,6 +87,12 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { id, ...data } = body;
   const updated = await prisma.creditLine.update({
