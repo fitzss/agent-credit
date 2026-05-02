@@ -28,3 +28,7 @@ export function hashAgentApiKey(rawKey: string): string {
   const pepper = resolvePepper();
   return createHmac("sha256", pepper).update(rawKey).digest("hex");
 }
+
+export function previewAgentApiKey(rawKey: string): string {
+  return `…${rawKey.slice(-4)}`;
+}

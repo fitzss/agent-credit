@@ -21,7 +21,7 @@
 import { PrismaClient } from "@prisma/client";
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
-import { hashAgentApiKey } from "../src/lib/agent-key-hash";
+import { hashAgentApiKey, previewAgentApiKey } from "../src/lib/agent-key-hash";
 
 const prisma = new PrismaClient();
 
@@ -64,9 +64,8 @@ async function setupFixture() {
       id: TEST_AGENT_ID,
       customerId: TEST_CUSTOMER_ID,
       label: "trust-signal-test-agent",
-      apiKey: "trust-signal-test-key-v0",
       apiKeyHash: hashAgentApiKey("trust-signal-test-key-v0"),
-      apiKeyPreview: "…y-v0",
+      apiKeyPreview: previewAgentApiKey("trust-signal-test-key-v0"),
     },
   });
   return custKeys;

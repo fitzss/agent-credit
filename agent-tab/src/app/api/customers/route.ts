@@ -29,7 +29,7 @@ export async function GET() {
   });
   const safe = customers.map(({ privateKey: _pk, agentIdentities, ...c }) => ({
     ...c,
-    agentIdentities: (agentIdentities ?? []).map(({ apiKey: _ak, apiKeyHash: _h, ...a }) => a),
+    agentIdentities: (agentIdentities ?? []).map(({ apiKeyHash: _h, ...a }) => a),
   }));
   return NextResponse.json(toJsonSafe(safe));
 }

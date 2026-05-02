@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { toJsonSafe } from "@/lib/json-safe";
-import { hashAgentApiKey } from "@/lib/agent-key-hash";
+import { hashAgentApiKey, previewAgentApiKey } from "@/lib/agent-key-hash";
 import {
   requireSession,
   requireCustomerOwned,
@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
   });
 
-  const safe = identities.map(({ apiKey: _ak, apiKeyHash: _h, ...rest }) => rest);
+  const safe = identities.map(({ apiKeyHash: _h, ...rest }) => rest);
 
   return NextResponse.json(toJsonSafe(safe));
 }
@@ -66,24 +66,28 @@ export async function POST(req: NextRequest) {
     return authErrorResponse(e);
   }
 
-  // NOTE: this 201 response includes the freshly-generated raw apiKey exactly
-  // once. The caller (owning customer or operator) is expected to capture it
-  // for the agent's runtime config. Slice 8A dual-writes apiKey + apiKeyHash;
-  // slice 8B will drop the raw column and the 201 will become the only place
-  // the raw value ever exists outside the caller's hands.
+  // The raw apiKey is generated in-memory only and never stored. The 201
+  // response is the one and only place it ever leaves the server; if the
+  // caller does not capture it here, it is unrecoverable. The DB stores
+  // apiKeyHash (HMAC-SHA256 + pepper) and apiKeyPreview (last 4 chars).
   const rawApiKey = randomUUID();
   const apiKeyHash = hashAgentApiKey(rawApiKey);
-  const apiKeyPreview = `…${rawApiKey.slice(-4)}`;
+  const apiKeyPreview = previewAgentApiKey(rawApiKey);
   const identity = await prisma.agentIdentity.create({
     data: {
       customerId: body.customerId,
       label: body.label,
       allowedToolIds: body.allowedToolIds || "*",
-      apiKey: rawApiKey,
       apiKeyHash,
       apiKeyPreview,
     },
   });
 
-  return NextResponse.json(toJsonSafe(identity), { status: 201 });
+  // Drop apiKeyHash from the response — server-only, same contract as GETs.
+  // Attach the raw apiKey explicitly: the only place it leaves the server.
+  const { apiKeyHash: _h, ...safeRow } = identity;
+  return NextResponse.json(
+    toJsonSafe({ ...safeRow, apiKey: rawApiKey }),
+    { status: 201 },
+  );
 }
