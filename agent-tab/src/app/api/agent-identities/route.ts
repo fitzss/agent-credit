@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { toJsonSafe } from "@/lib/json-safe";
+import { hashAgentApiKey } from "@/lib/agent-key-hash";
 import {
   requireSession,
   requireCustomerOwned,
@@ -46,7 +48,7 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
   });
 
-  const safe = identities.map(({ apiKey, ...rest }) => ({
+  const safe = identities.map(({ apiKey, apiKeyHash: _h, ...rest }) => ({
     ...rest,
     apiKeyPreview: previewApiKey(apiKey),
   }));
@@ -74,14 +76,18 @@ export async function POST(req: NextRequest) {
 
   // NOTE: this 201 response includes the freshly-generated raw apiKey exactly
   // once. The caller (owning customer or operator) is expected to capture it
-  // for the agent's runtime config. This is temporary until the future
-  // key-hashing slice replaces the raw column with apiKeyHash + a one-time
-  // recovery token.
+  // for the agent's runtime config. Slice 8A dual-writes apiKey + apiKeyHash;
+  // slice 8B will drop the raw column and the 201 will become the only place
+  // the raw value ever exists outside the caller's hands.
+  const rawApiKey = randomUUID();
+  const apiKeyHash = hashAgentApiKey(rawApiKey);
   const identity = await prisma.agentIdentity.create({
     data: {
       customerId: body.customerId,
       label: body.label,
       allowedToolIds: body.allowedToolIds || "*",
+      apiKey: rawApiKey,
+      apiKeyHash,
     },
   });
 

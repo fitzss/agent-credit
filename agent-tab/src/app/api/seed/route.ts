@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { generateKeypair, buildCanonicalMessage, signMessage } from "@/lib/crypto";
 import { buildDelegationMessageV1 } from "@/lib/tracker/delegation";
+import { hashAgentApiKey } from "@/lib/agent-key-hash";
 import { NextRequest, NextResponse } from "next/server";
 import { requireOperator, authErrorResponse } from "@/lib/auth";
 
@@ -101,6 +102,7 @@ export async function POST(req: NextRequest) {
       customerId: customer.id,
       label: "incident-responder",
       apiKey: "agent-key-demo-001",
+      apiKeyHash: hashAgentApiKey("agent-key-demo-001"),
     },
   });
 
@@ -109,6 +111,7 @@ export async function POST(req: NextRequest) {
       customerId: customer.id,
       label: "research-assistant",
       apiKey: "agent-key-demo-002",
+      apiKeyHash: hashAgentApiKey("agent-key-demo-002"),
     },
   });
 
@@ -262,6 +265,7 @@ export async function POST(req: NextRequest) {
       customerId: customer2.id,
       label: "auto-researcher",
       apiKey: "agent-key-demo-003",
+      apiKeyHash: hashAgentApiKey("agent-key-demo-003"),
     },
   });
 

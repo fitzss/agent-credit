@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { tracker, TrackerError } from "@/lib/tracker/service";
+import { hashAgentApiKey } from "@/lib/agent-key-hash";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 
@@ -18,10 +19,20 @@ export async function POST(req: NextRequest) {
   }
 
   // --- App layer: authenticate ---
-  const agent = await prisma.agentIdentity.findUnique({
-    where: { apiKey },
+  // Slice 8A: hash-preferred lookup with raw fallback for legacy rows that
+  // pre-date the backfill. Removed in slice 8B once the raw apiKey column
+  // is dropped.
+  const apiKeyHash = hashAgentApiKey(apiKey);
+  let agent = await prisma.agentIdentity.findUnique({
+    where: { apiKeyHash },
     include: { customer: true },
   });
+  if (!agent) {
+    agent = await prisma.agentIdentity.findUnique({
+      where: { apiKey },
+      include: { customer: true },
+    });
+  }
   if (!agent || agent.status !== "active") {
     return NextResponse.json({ error: "Invalid or inactive agent identity" }, { status: 401 });
   }
