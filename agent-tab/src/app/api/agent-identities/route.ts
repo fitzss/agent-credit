@@ -11,11 +11,6 @@ import {
 } from "@/lib/auth";
 import type { Prisma } from "@prisma/client";
 
-function previewApiKey(apiKey: string | null | undefined): string | null {
-  if (!apiKey) return null;
-  return `…${apiKey.slice(-4)}`;
-}
-
 export async function GET(req: NextRequest) {
   let user;
   try {
@@ -48,10 +43,7 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
   });
 
-  const safe = identities.map(({ apiKey, apiKeyHash: _h, ...rest }) => ({
-    ...rest,
-    apiKeyPreview: previewApiKey(apiKey),
-  }));
+  const safe = identities.map(({ apiKey: _ak, apiKeyHash: _h, ...rest }) => rest);
 
   return NextResponse.json(toJsonSafe(safe));
 }
@@ -81,6 +73,7 @@ export async function POST(req: NextRequest) {
   // the raw value ever exists outside the caller's hands.
   const rawApiKey = randomUUID();
   const apiKeyHash = hashAgentApiKey(rawApiKey);
+  const apiKeyPreview = `…${rawApiKey.slice(-4)}`;
   const identity = await prisma.agentIdentity.create({
     data: {
       customerId: body.customerId,
@@ -88,6 +81,7 @@ export async function POST(req: NextRequest) {
       allowedToolIds: body.allowedToolIds || "*",
       apiKey: rawApiKey,
       apiKeyHash,
+      apiKeyPreview,
     },
   });
 

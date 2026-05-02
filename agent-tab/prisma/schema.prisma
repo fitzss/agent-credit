@@ -55,6 +55,7 @@ model AgentIdentity {
   label               String
   apiKey              String        @unique @default(uuid())
   apiKeyHash          String?       @unique
+  apiKeyPreview       String?
   allowedToolIds      String        @default("*")
   status              String        @default("active")
   createdAt           DateTime      @default(now())

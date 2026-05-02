@@ -167,6 +167,7 @@ async function seed() {
       label: "auto-researcher",
       apiKey: "auth-demo-key-001",
       apiKeyHash: hashAgentApiKey("auth-demo-key-001"),
+      apiKeyPreview: "…-001",
     },
   });
   await prisma.agentIdentity.create({
@@ -176,6 +177,7 @@ async function seed() {
       label: "ops-monitor",
       apiKey: "auth-demo-key-002",
       apiKeyHash: hashAgentApiKey("auth-demo-key-002"),
+      apiKeyPreview: "…-002",
     },
   });
   console.log(`Created agents: auto-researcher (key-001), ops-monitor (key-002)`);

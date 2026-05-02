@@ -103,6 +103,7 @@ export async function POST(req: NextRequest) {
       label: "incident-responder",
       apiKey: "agent-key-demo-001",
       apiKeyHash: hashAgentApiKey("agent-key-demo-001"),
+      apiKeyPreview: "…-001",
     },
   });
 
@@ -112,6 +113,7 @@ export async function POST(req: NextRequest) {
       label: "research-assistant",
       apiKey: "agent-key-demo-002",
       apiKeyHash: hashAgentApiKey("agent-key-demo-002"),
+      apiKeyPreview: "…-002",
     },
   });
 
@@ -266,6 +268,7 @@ export async function POST(req: NextRequest) {
       label: "auto-researcher",
       apiKey: "agent-key-demo-003",
       apiKeyHash: hashAgentApiKey("agent-key-demo-003"),
+      apiKeyPreview: "…-003",
     },
   });
 

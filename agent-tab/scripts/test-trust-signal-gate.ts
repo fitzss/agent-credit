@@ -66,6 +66,7 @@ async function setupFixture() {
       label: "trust-signal-test-agent",
       apiKey: "trust-signal-test-key-v0",
       apiKeyHash: hashAgentApiKey("trust-signal-test-key-v0"),
+      apiKeyPreview: "…y-v0",
     },
   });
   return custKeys;
