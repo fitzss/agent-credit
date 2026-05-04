@@ -261,7 +261,7 @@ async function main() {
 
       const createRes = await fetch(`${BASE}/api/delegations`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({
           customerId: CUSTOMER_ID,
           agentIdentityId: AGENT_1_ID,
@@ -279,7 +279,7 @@ async function main() {
       // Revoke it
       await fetch(`${BASE}/api/delegations`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({ id: delegationId }),
       });
 
@@ -372,7 +372,7 @@ async function main() {
 
       const res = await fetch(`${BASE}/api/delegations`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({
           customerId: CUSTOMER_ID,
           agentIdentityId: "nonexistent-agent-id",

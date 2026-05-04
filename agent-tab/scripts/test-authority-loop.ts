@@ -61,10 +61,10 @@ async function post(url: string, body: unknown, headers?: Record<string, string>
   return { status: res.status, data: await res.json() };
 }
 
-async function del(url: string, body: unknown) {
+async function del(url: string, body: unknown, headers?: Record<string, string>) {
   const res = await fetch(url, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: await res.json() };
@@ -150,7 +150,7 @@ async function main() {
     spendCap: "5.0",
     expiresAt,
     authSignature: delegationSig,
-  });
+  }, { Cookie: COOKIE });
 
   if (createStatus === 201 && createData.delegationId && createData.agentIdentityId === AGENT_ID) {
     pass("Agent-bound delegation created (v2 format)");
@@ -185,7 +185,7 @@ async function main() {
     pass("Proxy returned pendingSignature with canonicalMessage");
   } else {
     fail("Proxy call", proxyData.error || `status ${proxyStatus}`);
-    await del(`${BASE}/api/delegations`, { id: delegationId });
+    await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
     process.exit(1);
   }
 
@@ -208,7 +208,7 @@ async function main() {
     pass("Committed: verified=true, delegated=true");
   } else {
     fail("Sign commitment", signData.error || `verified=${signData.verified} delegated=${signData.delegated}`);
-    await del(`${BASE}/api/delegations`, { id: delegationId });
+    await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
     await prisma.$disconnect();
     process.exit(1);
   }
@@ -259,7 +259,7 @@ async function main() {
   }
 
   // --- Cleanup: revoke test delegation ---
-  await del(`${BASE}/api/delegations`, { id: delegationId });
+  await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
   await prisma.$disconnect();
   const afterCleanup = await getPoolState(COOKIE);
 

@@ -22,6 +22,7 @@ import { PrismaClient } from "@prisma/client";
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
 import { hashAgentApiKey, previewAgentApiKey } from "../src/lib/agent-key-hash";
+import { operatorCookieHeader } from "./lib/test-session";
 
 const prisma = new PrismaClient();
 
@@ -38,10 +39,10 @@ function fail(label: string, detail?: string) {
   failed++;
 }
 
-async function post(url: string, body: unknown) {
+async function post(url: string, body: unknown, headers?: Record<string, string>) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: await res.json() };
@@ -118,6 +119,10 @@ async function main() {
   // Clean up any leftover state from prior runs
   await teardownFixture();
 
+  // Slice 9: /api/delegations now requires a session. Mint an operator
+  // cookie locally; same JWT shape a real magic-link login produces.
+  const COOKIE = await operatorCookieHeader(prisma);
+
   let custKeys;
   try {
     custKeys = await setupFixture();
@@ -136,7 +141,7 @@ async function main() {
         trustSignalIssuer: "test-issuer-v0",
         trustSignal: "valid-test-signal",
       });
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 201 && data.delegationId) {
         pass(`Delegation created (${data.delegationId.substring(0, 16)}...)`);
@@ -153,7 +158,7 @@ async function main() {
     console.log("\nTest 2: No signal (backward compat)");
     {
       const body = await buildDelegationBody(custKeys);
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 201 && data.delegationId) {
         pass("Delegation created without trust signal (backward compat)");
@@ -173,7 +178,7 @@ async function main() {
         trustSignalIssuer: "test-issuer-v0",
         trustSignal: "wrong-signal",
       });
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 403 && data.code === "INVALID_SIGNAL") {
         pass("Rejected: 403 INVALID_SIGNAL");
@@ -199,7 +204,7 @@ async function main() {
         trustSignalIssuer: "nonexistent-issuer",
         trustSignal: "any-value",
       });
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 400 && data.code === "UNKNOWN_ISSUER") {
         pass("Rejected: 400 UNKNOWN_ISSUER");
@@ -225,7 +230,7 @@ async function main() {
         trustSignalIssuer: "test-issuer-v0",
         // trustSignal omitted
       });
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 400 && data.code === "MALFORMED_REQUEST") {
         pass("Rejected: 400 MALFORMED_REQUEST");
@@ -251,7 +256,7 @@ async function main() {
         trustSignal: "valid-test-signal",
         // trustSignalIssuer omitted
       });
-      const { status, data } = await post(`${BASE}/api/delegations`, body);
+      const { status, data } = await post(`${BASE}/api/delegations`, body, { Cookie: COOKIE });
 
       if (status === 400 && data.code === "MALFORMED_REQUEST") {
         pass("Rejected: 400 MALFORMED_REQUEST");

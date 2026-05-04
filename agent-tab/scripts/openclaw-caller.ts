@@ -21,6 +21,7 @@ import { PrismaClient } from "@prisma/client";
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
 import { formatCredits } from "../src/lib/credits";
+import { operatorCookieHeader } from "./lib/test-session";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -33,6 +34,10 @@ const AGENT_KEY = "auth-demo-key-001";
 const ROOT_KEY_FILE = path.join(__dirname, "..", ".demo-state", "authority-demo-root.json");
 
 const prisma = new PrismaClient();
+
+// Slice 9: /api/delegations now requires a session. main() mints this once;
+// createFreshDelegation() and cleanup() read it before issuing requests.
+let COOKIE: string = "";
 
 type Mode = "positive" | "negative" | "demo";
 
@@ -59,10 +64,10 @@ async function post(url: string, body: unknown, headers: Record<string, string> 
   return { status: res.status, data: await res.json() as Record<string, unknown> };
 }
 
-async function del(url: string, body: unknown) {
+async function del(url: string, body: unknown, headers: Record<string, string> = {}) {
   const res = await fetch(url, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status };
@@ -109,7 +114,7 @@ async function createFreshDelegation(
     spendCap: capCreditsStr,
     expiresAt,
     authSignature: authSig,
-  });
+  }, { Cookie: COOKIE });
 
   if (status !== 201 || typeof data.delegationId !== "string") {
     bad(`Delegation creation failed (${status}): ${JSON.stringify(data)}`);
@@ -228,13 +233,17 @@ async function cleanup(): Promise<void> {
   const all = await prisma.delegation.findMany({ where: { customerId: CUSTOMER_ID } });
   const stale = all.filter((d) => !SEED_DELEGATION_IDS.has(d.id));
   for (const d of stale) {
-    await del(`${BASE}/api/delegations`, { id: d.id });
+    await del(`${BASE}/api/delegations`, { id: d.id }, { Cookie: COOKIE });
   }
   ok(`Cleaned ${stale.length} delegation(s); ${all.length - stale.length} seed delegation(s) preserved`);
 }
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // Mint operator cookie before any /api/delegations call (cleanup or normal).
+  COOKIE = await operatorCookieHeader(prisma);
+
   if (args.includes("--cleanup")) {
     await cleanup();
     await prisma.$disconnect();
