@@ -1,5 +1,6 @@
 import { reconcileRedemption, ReconcileError } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 /**
  * POST /api/reserves/reconcile-redemption
@@ -7,6 +8,12 @@ import { NextRequest, NextResponse } from "next/server";
  * The preferred path is the one-shot /api/reserves/redeem endpoint.
  */
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { reserveId, obligationId, redemptionTxId, grossRedeemNanoErg, feeNanoErg, netPayoutNanoErg } = body;
 

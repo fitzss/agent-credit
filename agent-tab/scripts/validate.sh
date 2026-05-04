@@ -92,6 +92,19 @@ check_contains "$HEALTH" '"ok"' "Sidecar health"
 
 RESERVES=$(curl -s "$AGENT/api/reserves" 2>/dev/null || echo '[]')
 check_contains "$RESERVES" '"id"' "Agent Tab API responding"
+
+# Mint operator session cookie ONCE for slice 10 operator-gated routes
+# (reconcile-redemption, recover-pending). Fail loudly if minting fails;
+# never silently continue with unauthenticated curls.
+COOKIE=$(npx tsx scripts/lib/test-session.ts --print-cookie 2>&1)
+COOKIE_EXIT=$?
+if [ $COOKIE_EXIT -ne 0 ] || [ -z "$COOKIE" ] || [[ "$COOKIE" != next-auth.session-token=* ]]; then
+  echo "FATAL: failed to mint operator cookie for validate.sh"
+  echo "  helper output: $COOKIE"
+  echo "  Hints: confirm NEXTAUTH_SECRET is exported, the dev DB is reachable,"
+  echo "  and the default operator user exists (run npm run backfill:operator)."
+  exit 1
+fi
 echo ""
 
 # === Scenario 6: Duplicate reconciliation prevention ===
@@ -99,6 +112,7 @@ echo "Scenario 6: Duplicate reconciliation prevention"
 if [ -n "$SETTLED_TX" ] && [ "$SETTLED_TX" != "null" ]; then
   RESP=$(curl -s -X POST "$AGENT/api/reserves/reconcile-redemption" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\",\"redemptionTxId\":\"$SETTLED_TX\",\"grossRedeemNanoErg\":100000000}" 2>/dev/null || echo '{}')
   check_contains "$RESP" "already reconciled" "Duplicate blocked"
 else
@@ -151,6 +165,7 @@ if [ -n "$V2_RESERVE" ] && [ -n "$OB1" ]; then
   # Recover any pending
   curl -s -X POST "$AGENT/api/reserves/recover-pending" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
   npx tsx -e "
   import{PrismaClient}from'@prisma/client';const p=new PrismaClient();
@@ -194,6 +209,7 @@ if [ -n "$OWNER_PK_PREFIX" ] && [ -f "$OWNER_FILE" ]; then
   # Recover any pending + restore
   curl -s -X POST "$AGENT/api/reserves/recover-pending" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
   npx tsx -e "
   import{PrismaClient}from'@prisma/client';const p=new PrismaClient();

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { deployReserve, getReserveStatus, deriveContractVersion } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 /**
  * Reserve management — app-layer endpoints that bridge to JVM sidecar.
@@ -20,6 +21,12 @@ export async function GET(req: NextRequest) {
  * Stores the reserve record in lifecycle state "requested".
  */
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { customerId, trackerNftId, reserveTokenId, initialCollateralNanoErg } = body;
 

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { reconcileRedemption } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
 
@@ -10,6 +11,12 @@ const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
  * Checks all pending redemptions for a reserve and auto-reconciles any that have confirmed.
  */
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const { reserveId } = await req.json();
   if (!reserveId) {
     return NextResponse.json({ error: "Missing reserveId" }, { status: 400 });
