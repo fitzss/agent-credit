@@ -451,7 +451,7 @@ async function main() {
         const sessionSig = await signMessage(proxyData.tab.canonicalMessage, session1.privateKey);
         const signRes = await fetch(`${BASE}/api/obligations/${proxyData.tab.obligationId}/sign`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Cookie: COOKIE },
           body: JSON.stringify({
             signature: sessionSig,
             updateId: proxyData.tab.updateId,

@@ -153,6 +153,7 @@ async function signPendingUpdate(
   const { status, data } = await post(
     `${BASE}/api/obligations/${obligationId}/sign`,
     { signature: sig, updateId, delegationId },
+    { Cookie: COOKIE },
   );
   return { status, data };
 }

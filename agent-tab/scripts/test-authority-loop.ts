@@ -201,7 +201,8 @@ async function main() {
 
   const { status: signStatus, data: signData } = await post(
     `${BASE}/api/obligations/${obligationId}/sign`,
-    { signature: sessionSig, updateId, delegationId: returnedDelegationId }
+    { signature: sessionSig, updateId, delegationId: returnedDelegationId },
+    { Cookie: COOKIE }
   );
 
   if (signStatus === 200 && signData.verified === true && signData.delegated === true) {
