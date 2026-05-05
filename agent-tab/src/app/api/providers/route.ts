@@ -2,11 +2,21 @@ import { prisma } from "@/lib/prisma";
 import { generateKeypair } from "@/lib/crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { toJsonSafe } from "@/lib/json-safe";
-import { requireOperator, authErrorResponse } from "@/lib/auth";
+import { requireOperator, requireSession, authErrorResponse } from "@/lib/auth";
 
 export async function GET() {
+  try {
+    await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const providers = await prisma.provider.findMany({
-    include: { tools: true, creditLines: { include: { customer: true } }, obligationStates: true },
+    include: {
+      tools: true,
+      creditLines: { include: { customer: { select: { id: true, name: true } } } },
+      obligationStates: true,
+    },
     orderBy: { createdAt: "desc" },
   });
   // Strip private keys from response
