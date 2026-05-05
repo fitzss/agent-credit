@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { reconcileRedemption, ReconcileError, computeCumulativeTrackerDebt, gatherExistingReserveEntries, ensureTrackerAligned, ensureSecretFile, REDEEM_POLL_INTERVAL_MS, REDEEM_POLL_ATTEMPTS } from "@/lib/reconcile";
 import { getReserveStatus } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
+import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
 
@@ -13,10 +14,24 @@ const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
  *
  * One-shot: on-chain redemption + app-layer reconciliation.
  *
- * Before starting a new redemption, recovers any pending ones first.
  * On confirmation timeout, persists a PendingRedemption record for later recovery.
+ *
+ * Order-of-checks rationale (slice 10b): auth → required-fields → load both rows
+ * → role/ownership decision (phase 2) → same-customer equality (phase 3) →
+ * recoverPending (only after ownership confirmed) → existing redeem guardrails.
+ * recoverPending was previously the FIRST action in this handler; moving it past
+ * ownership prevents a customer-role caller from triggering reconciliation work
+ * on a foreign or nonexistent reserve. Do not merge phase 2 and phase 3, and do
+ * not move recoverPending back to the top.
  */
 export async function POST(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { reserveId, obligationId } = body;
 
@@ -24,20 +39,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing required fields: reserveId, obligationId" }, { status: 400 });
   }
 
-  // --- Step 0: Recover any pending redemptions for this reserve ---
-  const recovered = await recoverPending(reserveId);
-
-  // --- Step 1: Load DB records ---
+  // --- Phase 1: Load both rows (no role-aware decisions, no side effects) ---
   const reserve = await prisma.reserve.findUnique({ where: { id: reserveId } });
-  if (!reserve) return NextResponse.json({ error: "Reserve not found" }, { status: 404 });
-  if (!reserve.boxId) return NextResponse.json({ error: "Reserve has no on-chain boxId" }, { status: 400 });
-
   const obligation = await prisma.obligationState.findUnique({ where: { id: obligationId } });
-  if (!obligation) return NextResponse.json({ error: "Obligation not found" }, { status: 404 });
 
+  // --- Phase 2: Role/ownership decision (must run BEFORE phase 3 mismatch
+  // and BEFORE recoverPending). Customer-role users get one collapsed 403 for
+  // missing/foreign/non-owned-on-either-side; operators retain 404 differentials.
+  if (user.role === "operator") {
+    if (!reserve) return NextResponse.json({ error: "Reserve not found" }, { status: 404 });
+    if (!obligation) return NextResponse.json({ error: "Obligation not found" }, { status: 404 });
+  } else {
+    const ownedIds = await ownedCustomerIds(user);
+    if (
+      !reserve ||
+      !obligation ||
+      !ownedIds ||
+      !ownedIds.includes(reserve.customerId) ||
+      !ownedIds.includes(obligation.customerId)
+    ) {
+      return NextResponse.json(
+        { error: "customer not owned by current user" },
+        { status: 403 }
+      );
+    }
+  }
+
+  // --- Phase 3: Same-customer equality (only reached after ownership confirmed) ---
   if (reserve.customerId !== obligation.customerId) {
     return NextResponse.json({ error: "Reserve and obligation belong to different customers" }, { status: 400 });
   }
+
+  // --- Step 1.5: Recover any pending redemptions for this reserve ---
+  // Moved from "Step 0" (top of handler) to AFTER auth + ownership + equality.
+  // recoverPending writes settlement state; running it before ownership would
+  // let a customer-role caller trigger reconciliation on a foreign reserve.
+  const recovered = await recoverPending(reserveId);
+
+  // --- Existing reserve precondition check ---
+  if (!reserve.boxId) return NextResponse.json({ error: "Reserve has no on-chain boxId" }, { status: 400 });
 
   if (obligation.currentAmount <= BigInt(0)) {
     // If we just recovered a pending redemption for this obligation, report it

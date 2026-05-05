@@ -1,17 +1,50 @@
 import { prisma } from "@/lib/prisma";
 import { deployReserve, getReserveStatus, deriveContractVersion } from "@/lib/sidecar-client";
 import { NextRequest, NextResponse } from "next/server";
-import { requireOperator, authErrorResponse } from "@/lib/auth";
+import {
+  requireSession,
+  requireOperator,
+  ownedCustomerIds,
+  authErrorResponse,
+} from "@/lib/auth";
 
 /**
  * Reserve management — app-layer endpoints that bridge to JVM sidecar.
  */
 
 export async function GET(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const customerId = req.nextUrl.searchParams.get("customerId");
-  const where = customerId ? { customerId } : {};
+
+  if (customerId) {
+    if (user.role !== "operator") {
+      const ownedIds = await ownedCustomerIds(user);
+      if (!ownedIds || !ownedIds.includes(customerId)) {
+        return NextResponse.json(
+          { error: "customer not owned by current user" },
+          { status: 403 }
+        );
+      }
+    }
+    const reserves = await prisma.reserve.findMany({
+      where: { customerId },
+      orderBy: { createdAt: "desc" },
+    });
+    const serializable = reserves.map((r) => ({ ...r, valueNanoErg: r.valueNanoErg.toString() }));
+    return NextResponse.json(serializable);
+  }
+
+  // No customerId: operator sees all; customer-role sees only owned customers' reserves.
+  const where =
+    user.role === "operator" ? {} : { customerId: { in: (await ownedCustomerIds(user)) ?? [] } };
   const reserves = await prisma.reserve.findMany({ where, orderBy: { createdAt: "desc" } });
-  const serializable = reserves.map(r => ({ ...r, valueNanoErg: r.valueNanoErg.toString() }));
+  const serializable = reserves.map((r) => ({ ...r, valueNanoErg: r.valueNanoErg.toString() }));
   return NextResponse.json(serializable);
 }
 
@@ -83,6 +116,13 @@ export async function POST(req: NextRequest) {
  * customer pubkey, obligation debtorPubKey, and on-chain R4 ownerPubKey.
  */
 export async function PATCH(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { reserveId } = body;
 
@@ -94,8 +134,19 @@ export async function PATCH(req: NextRequest) {
     where: { id: reserveId },
     include: { customer: true },
   });
-  if (!reserve) {
-    return NextResponse.json({ error: "Reserve not found" }, { status: 404 });
+
+  if (user.role === "operator") {
+    if (!reserve) {
+      return NextResponse.json({ error: "Reserve not found" }, { status: 404 });
+    }
+  } else {
+    const ownedIds = await ownedCustomerIds(user);
+    if (!reserve || !ownedIds || !ownedIds.includes(reserve.customerId)) {
+      return NextResponse.json(
+        { error: "customer not owned by current user" },
+        { status: 403 }
+      );
+    }
   }
 
   try {

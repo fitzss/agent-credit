@@ -90,12 +90,10 @@ echo "Pre-checks:"
 HEALTH=$(curl -s "$SIDECAR/health" 2>/dev/null || echo '{}')
 check_contains "$HEALTH" '"ok"' "Sidecar health"
 
-RESERVES=$(curl -s "$AGENT/api/reserves" 2>/dev/null || echo '[]')
-check_contains "$RESERVES" '"id"' "Agent Tab API responding"
-
-# Mint operator session cookie ONCE for slice 10 operator-gated routes
-# (reconcile-redemption, recover-pending). Fail loudly if minting fails;
-# never silently continue with unauthenticated curls.
+# Mint operator session cookie ONCE for slice 10 + 10b auth-gated routes
+# (reconcile-redemption, recover-pending, GET/PATCH /api/reserves, redeem,
+# debt/transfer). Fail loudly if minting fails; never silently continue with
+# unauthenticated curls.
 COOKIE=$(npx tsx scripts/lib/test-session.ts --print-cookie 2>&1)
 COOKIE_EXIT=$?
 if [ $COOKIE_EXIT -ne 0 ] || [ -z "$COOKIE" ] || [[ "$COOKIE" != next-auth.session-token=* ]]; then
@@ -105,6 +103,9 @@ if [ $COOKIE_EXIT -ne 0 ] || [ -z "$COOKIE" ] || [[ "$COOKIE" != next-auth.sessi
   echo "  and the default operator user exists (run npm run backfill:operator)."
   exit 1
 fi
+
+RESERVES=$(curl -s -H "Cookie: $COOKIE" "$AGENT/api/reserves" 2>/dev/null || echo '[]')
+check_contains "$RESERVES" '"id"' "Agent Tab API responding"
 echo ""
 
 # === Scenario 6: Duplicate reconciliation prevention ===
@@ -131,6 +132,7 @@ if [ -n "$V1_RESERVE" ] && [ "$V1_RESERVE" != "" ] && [ -n "$OTHER_OB" ] && [ "$
   sleep 2
   RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V1_RESERVE\",\"obligationId\":\"$OTHER_OB\"}" 2>/dev/null || echo '{}')
   check_contains "$RESP" "v1" "V1 repeat blocked"
   npx tsx -e "
@@ -156,11 +158,13 @@ if [ -n "$V2_RESERVE" ] && [ -n "$OB1" ]; then
   sleep 3
   RESP=$(curl -s -X POST "$AGENT/api/reserves/redeem" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\"}" 2>/dev/null || echo '{}')
   check_contains "$RESP" "drift" "Drift detected"
   # Restore via refresh
   curl -s -X PATCH "$AGENT/api/reserves" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\"}" > /dev/null 2>&1
   # Recover any pending
   curl -s -X POST "$AGENT/api/reserves/recover-pending" \
@@ -195,6 +199,7 @@ if [ -n "$OWNER_PK_PREFIX" ] && [ -f "$OWNER_FILE" ]; then
   sleep 1
   curl -s --max-time 30 -X POST "$AGENT/api/reserves/redeem" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V2_RESERVE\",\"obligationId\":\"$OB1\"}" > /dev/null 2>&1
   if [ -f "$OWNER_FILE" ]; then
     PERMS=$(stat -c '%a' "$OWNER_FILE" 2>/dev/null || stat -f '%Lp' "$OWNER_FILE" 2>/dev/null)
@@ -227,6 +232,7 @@ echo "Scenario 12: Transfer guardrails"
 if [ -n "$OB1" ] && [ -n "$OTHER_OB" ] && [ "$OTHER_OB" != "" ] && [ "$OTHER_OB" != "null" ]; then
   RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OTHER_OB\",\"amountCredits\":0.01}" 2>/dev/null || echo '{}')
   check_contains "$RESP" "same debtor" "Transfer: different debtor blocked"
 else
@@ -236,18 +242,21 @@ fi
 # Self transfer
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
+  -H "Cookie: $COOKIE" \
   -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB1\",\"amountCredits\":0.01}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "same obligation" "Transfer: self blocked"
 
 # Negative amount
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
+  -H "Cookie: $COOKIE" \
   -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB2\",\"amountCredits\":-0.01}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "positive" "Transfer: negative amount blocked"
 
 # Insufficient source
 RESP=$(curl -s -X POST "$AGENT/api/debt/transfer" \
   -H 'Content-Type: application/json' \
+  -H "Cookie: $COOKIE" \
   -d "{\"fromObligationId\":\"$OB1\",\"toObligationId\":\"$OB2\",\"amountCredits\":999}" 2>/dev/null || echo '{}')
 check_contains "$RESP" "insufficient" "Transfer: insufficient source blocked"
 echo ""
@@ -257,6 +266,7 @@ echo "Scenario 13: Contract version derivation"
 if [ -n "$V1_RESERVE" ] && [ "$V1_RESERVE" != "" ]; then
   RESP=$(curl -s -X PATCH "$AGENT/api/reserves" \
     -H 'Content-Type: application/json' \
+    -H "Cookie: $COOKIE" \
     -d "{\"reserveId\":\"$V1_RESERVE\"}" 2>/dev/null || echo '{}')
   check_contains "$RESP" '"v1"' "V1 reserve version correct"
 else
