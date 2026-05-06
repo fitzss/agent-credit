@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { toJsonSafe } from "@/lib/json-safe";
 import { requireSession, authErrorResponse } from "@/lib/auth";
+import { PENDING_TTL_MS } from "@/lib/tracker/service";
 
 export async function GET(
   _req: NextRequest,
@@ -40,6 +41,7 @@ export async function GET(
   const updates = await prisma.obligationUpdate.findMany({
     where: {
       signatureStatus: "pending",
+      timestamp: { gte: new Date(Date.now() - PENDING_TTL_MS) },
       obligationState: { is: { customerId: id } },
     },
     select: {
