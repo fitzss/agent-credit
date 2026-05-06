@@ -74,6 +74,13 @@ export default function CustomerDashboard() {
   const [showAgentForm, setShowAgentForm] = useState(false);
   const [agentLabel, setAgentLabel] = useState("");
   const [lastCreatedApiKey, setLastCreatedApiKey] = useState<string | null>(null);
+  const [lastKeyContext, setLastKeyContext] = useState<"created" | "rotated" | null>(null);
+
+  // Per-card lifecycle state for Revoke / Reactivate / Rotate buttons
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [confirmRotateId, setConfirmRotateId] = useState<string | null>(null);
+  const [actingOnId, setActingOnId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<Record<string, string>>({});
 
   // Self-custody signing (standalone — paste obligation id + canonical message)
   const [signObligationId, setSignObligationId] = useState("");
@@ -120,11 +127,81 @@ export default function CustomerDashboard() {
       if (typeof created?.apiKey === "string") {
         // One-time display: held in component memory only. Not persisted.
         setLastCreatedApiKey(created.apiKey);
+        setLastKeyContext("created");
       }
     }
     setAgentLabel("");
     setShowAgentForm(false);
     load();
+  };
+
+  const clearAgentError = (agentId: string) => {
+    setActionError((m) => {
+      if (!(agentId in m)) return m;
+      const next = { ...m };
+      delete next[agentId];
+      return next;
+    });
+  };
+
+  const patchAgentStatus = async (
+    agentId: string,
+    status: "active" | "revoked",
+  ) => {
+    setActingOnId(agentId);
+    clearAgentError(agentId);
+    try {
+      const res = await fetch(`/api/agent-identities/${agentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
+      setConfirmRevokeId((id) => (id === agentId ? null : id));
+      load();
+    } catch (e) {
+      setActionError((m) => ({ ...m, [agentId]: (e as Error).message }));
+    } finally {
+      setActingOnId(null);
+    }
+  };
+
+  const rotateAgentKey = async (agentId: string) => {
+    setActingOnId(agentId);
+    clearAgentError(agentId);
+    try {
+      const res = await fetch(`/api/agent-identities/${agentId}/rotate`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (typeof data?.apiKey === "string") {
+        // One-time display: held in component memory only. Not persisted.
+        setLastCreatedApiKey(data.apiKey);
+        setLastKeyContext("rotated");
+      }
+      setConfirmRotateId((id) => (id === agentId ? null : id));
+      load();
+    } catch (e) {
+      setActionError((m) => ({ ...m, [agentId]: (e as Error).message }));
+    } finally {
+      setActingOnId(null);
+    }
+  };
+
+  const copyKeyToClipboard = async (key: string) => {
+    try {
+      await navigator.clipboard.writeText(key);
+    } catch {
+      // Clipboard write rejected (permissions/insecure context).
+      // Fail silently — user still has the key visible to copy manually.
+    }
   };
 
   const signPending = async () => {
@@ -401,21 +478,43 @@ export default function CustomerDashboard() {
         </div>
 
         {lastCreatedApiKey && (
-          <div className="border border-yellow-700 bg-yellow-900/20 rounded-lg p-4 mb-4">
-            <h3 className="font-medium text-yellow-200 mb-1">New agent API key — shown once</h3>
+          <div
+            data-testid="one-time-key-banner"
+            className="border border-yellow-700 bg-yellow-900/20 rounded-lg p-4 mb-4"
+          >
+            <h3 className="font-medium text-yellow-200 mb-1">
+              {lastKeyContext === "rotated"
+                ? "Rotated agent API key — shown once"
+                : "New agent API key — shown once"}
+            </h3>
             <p className="text-sm text-zinc-300 mb-2">
-              Save this now. After dismissing this banner the full key will not be shown
-              again — only the last 4 characters.
+              {lastKeyContext === "rotated"
+                ? "The previous key has been invalidated. Save this new key now — after dismissing this banner only the last 4 characters will be shown."
+                : "Save this now. After dismissing this banner the full key will not be shown again — only the last 4 characters."}
             </p>
-            <p className="font-mono text-sm bg-zinc-950 border border-zinc-800 rounded px-3 py-2 mb-3 break-all">
+            <p
+              data-testid="one-time-key-value"
+              className="font-mono text-sm bg-zinc-950 border border-zinc-800 rounded px-3 py-2 mb-3 break-all"
+            >
               {lastCreatedApiKey}
             </p>
-            <button
-              onClick={() => setLastCreatedApiKey(null)}
-              className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 text-white text-sm rounded"
-            >
-              I&apos;ve saved it — dismiss
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => copyKeyToClipboard(lastCreatedApiKey)}
+                className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-white text-sm rounded"
+              >
+                Copy
+              </button>
+              <button
+                onClick={() => {
+                  setLastCreatedApiKey(null);
+                  setLastKeyContext(null);
+                }}
+                className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 text-white text-sm rounded"
+              >
+                I&apos;ve saved it — dismiss
+              </button>
+            </div>
           </div>
         )}
 
@@ -445,22 +544,130 @@ export default function CustomerDashboard() {
         )}
 
         <div className="space-y-3">
-          {customer.agentIdentities.map((agent) => (
-            <div key={agent.id} className="border border-zinc-800 rounded-lg p-4">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="font-medium">{agent.label}</h3>
-                  <p className="text-xs text-zinc-500 mt-1 font-mono">
-                    API Key: <span className="text-zinc-400">{agent.apiKeyPreview ?? "—"}</span>
-                  </p>
-                  <p className="text-[10px] text-zinc-600 mt-0.5">
-                    Full key shown once at creation.
-                  </p>
+          {customer.agentIdentities.map((agent) => {
+            const isActing = actingOnId === agent.id;
+            const isConfirmingRevoke = confirmRevokeId === agent.id;
+            const isConfirmingRotate = confirmRotateId === agent.id;
+            const err = actionError[agent.id];
+            const inConfirm = isConfirmingRevoke || isConfirmingRotate;
+            return (
+              <div
+                key={agent.id}
+                data-testid={`agent-card-${agent.id}`}
+                className="border border-zinc-800 rounded-lg p-4"
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h3 className="font-medium">{agent.label}</h3>
+                    <p className="text-xs text-zinc-500 mt-1 font-mono">
+                      API Key: <span className="text-zinc-400">{agent.apiKeyPreview ?? "—"}</span>
+                    </p>
+                    <p className="text-[10px] text-zinc-600 mt-0.5">
+                      Full key shown once at creation or rotation.
+                    </p>
+                  </div>
+                  <StatusBadge status={agent.status} />
                 </div>
-                <StatusBadge status={agent.status} />
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  {!inConfirm && agent.status === "active" && (
+                    <button
+                      data-testid={`agent-revoke-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        setConfirmRotateId(null);
+                        setConfirmRevokeId(agent.id);
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-red-400 border border-red-800/50 rounded hover:bg-red-900/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Revoke
+                    </button>
+                  )}
+                  {!inConfirm && agent.status === "revoked" && (
+                    <button
+                      data-testid={`agent-reactivate-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        patchAgentStatus(agent.id, "active");
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-green-400 border border-green-800/50 rounded hover:bg-green-900/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Reactivate
+                    </button>
+                  )}
+                  {!inConfirm && (
+                    <button
+                      data-testid={`agent-rotate-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        setConfirmRevokeId(null);
+                        setConfirmRotateId(agent.id);
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-zinc-300 border border-zinc-700 rounded hover:bg-zinc-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Rotate Key
+                    </button>
+                  )}
+
+                  {isConfirmingRevoke && (
+                    <>
+                      <span className="text-xs text-zinc-400">Revoke this agent?</span>
+                      <button
+                        data-testid={`agent-confirm-revoke-${agent.id}`}
+                        onClick={() => patchAgentStatus(agent.id, "revoked")}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-red-700 hover:bg-red-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        {isActing ? "Revoking..." : "Confirm Revoke"}
+                      </button>
+                      <button
+                        data-testid={`agent-cancel-revoke-${agent.id}`}
+                        onClick={() => setConfirmRevokeId(null)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+
+                  {isConfirmingRotate && (
+                    <>
+                      <span className="text-xs text-zinc-400">
+                        Old key stops working immediately.
+                      </span>
+                      <button
+                        data-testid={`agent-confirm-rotate-${agent.id}`}
+                        onClick={() => rotateAgentKey(agent.id)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-200 hover:bg-white text-black rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        {isActing ? "Rotating..." : "Confirm Rotate"}
+                      </button>
+                      <button
+                        data-testid={`agent-cancel-rotate-${agent.id}`}
+                        onClick={() => setConfirmRotateId(null)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+                {err && (
+                  <p
+                    data-testid={`agent-error-${agent.id}`}
+                    className="text-xs text-red-400 mt-2"
+                  >
+                    {err}
+                  </p>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {customer.agentIdentities.length === 0 && (
             <div className="border border-dashed border-zinc-700 rounded-lg p-8 text-center text-zinc-500">
               No agent identities yet
@@ -525,6 +732,7 @@ function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     active: "bg-green-900/50 text-green-400",
     success: "bg-green-900/50 text-green-400",
+    revoked: "bg-zinc-800 text-zinc-400",
     denied: "bg-red-900/50 text-red-400",
     error: "bg-red-900/50 text-red-400",
   };
