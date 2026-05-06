@@ -39,7 +39,17 @@ export async function GET(req: NextRequest) {
 
   const identities = await prisma.agentIdentity.findMany({
     where,
-    include: { customer: true },
+    include: {
+      customer: {
+        select: {
+          id: true,
+          name: true,
+          publicKey: true,
+          status: true,
+          signingMode: true,
+        },
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 
