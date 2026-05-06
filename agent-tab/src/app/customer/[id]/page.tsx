@@ -13,6 +13,23 @@ interface AgentIdentity {
   status: string;
 }
 
+interface PendingSignature {
+  id: string;                    // updateId
+  obligationStateId: string;     // obligationId
+  canonicalMessage: string;
+  delta: string;                 // BigInt nanoCredits, serialised as string
+  newAmount: string;             // BigInt nanoCredits, serialised as string
+  type: string;                  // "charge" | "settlement"
+  delegationId: string | null;
+  agentIdentityId: string | null;
+  timestamp: string;
+  obligationState: {
+    id: string;
+    providerId: string;
+    provider: { id: string; name: string };
+  };
+}
+
 interface CreditLine {
   id: string;
   providerId: string;
@@ -82,12 +99,13 @@ export default function CustomerDashboard() {
   const [actingOnId, setActingOnId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<Record<string, string>>({});
 
-  // Self-custody signing (standalone — paste obligation id + canonical message)
-  const [signObligationId, setSignObligationId] = useState("");
-  const [signCanonicalMessage, setSignCanonicalMessage] = useState("");
-  const [signingKey, setSigningKey] = useState("");
-  const [signing, setSigning] = useState(false);
-  const [signResult, setSignResult] = useState<string | null>(null);
+  // Self-custody pending signatures: each pending ObligationUpdate is one card
+  // in the panel. Signatures are produced externally and pasted in. The UI
+  // never sees a private key.
+  const [pendingSignatures, setPendingSignatures] = useState<PendingSignature[]>([]);
+  const [signatureInput, setSignatureInput] = useState<Record<string, string>>({});
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Record<string, string>>({});
 
   const load = useCallback(() => {
     fetch("/api/customers")
@@ -204,40 +222,70 @@ export default function CustomerDashboard() {
     }
   };
 
-  const signPending = async () => {
-    if (!signObligationId.trim() || !signCanonicalMessage.trim() || !signingKey.trim()) return;
-    setSigning(true);
-    setSignResult(null);
-
+  const fetchPendingSignatures = useCallback(async () => {
+    if (!customer || customer.signingMode !== "self-custody") {
+      setPendingSignatures([]);
+      return;
+    }
     try {
-      // Sign client-side using @noble/secp256k1. The private key is used in
-      // the browser only and is never sent to the server.
-      const secp = await import("@noble/secp256k1");
-      const msgBytes = new TextEncoder().encode(signCanonicalMessage);
-      const hashBuffer = await crypto.subtle.digest("SHA-256", msgBytes);
-      const msgHash = new Uint8Array(hashBuffer);
-      const privKeyBytes = secp.etc.hexToBytes(signingKey);
-      const sig = secp.sign(msgHash, privKeyBytes);
-      const sigHex = secp.etc.bytesToHex(sig);
+      const res = await fetch(`/api/customers/${id}/pending-signatures`);
+      if (!res.ok) {
+        setPendingSignatures([]);
+        return;
+      }
+      const data = await res.json();
+      setPendingSignatures(Array.isArray(data) ? (data as PendingSignature[]) : []);
+    } catch {
+      setPendingSignatures([]);
+    }
+  }, [customer, id]);
 
-      const res = await fetch(`/api/obligations/${signObligationId.trim()}/sign`, {
+  useEffect(() => {
+    fetchPendingSignatures();
+  }, [fetchPendingSignatures]);
+
+  const submitSignature = async (row: PendingSignature) => {
+    const sig = (signatureInput[row.id] ?? "").trim();
+    if (!sig) {
+      setSubmitError((m) => ({ ...m, [row.id]: "Signature is required" }));
+      return;
+    }
+    setSubmittingId(row.id);
+    setSubmitError((m) => {
+      if (!(row.id in m)) return m;
+      const next = { ...m };
+      delete next[row.id];
+      return next;
+    });
+    try {
+      const body: { signature: string; updateId: string; delegationId?: string } = {
+        signature: sig,
+        updateId: row.id,
+      };
+      if (row.delegationId) body.delegationId = row.delegationId;
+      const res = await fetch(`/api/obligations/${row.obligationStateId}/sign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signature: sigHex }),
+        body: JSON.stringify(body),
       });
-      const data = await res.json();
-
-      if (data.error) {
-        setSignResult(`Failed: ${data.error}`);
-      } else {
-        setSignResult("Signed and verified by tracker");
-        load();
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
       }
+      // Success: clear that row's input and refresh both pending list and
+      // customer state. The signed row will disappear from pendingSignatures.
+      setSignatureInput((m) => {
+        const next = { ...m };
+        delete next[row.id];
+        return next;
+      });
+      await fetchPendingSignatures();
+      load();
     } catch (e) {
-      setSignResult(`Signing error: ${String(e)}`);
+      setSubmitError((m) => ({ ...m, [row.id]: (e as Error).message }));
+    } finally {
+      setSubmittingId(null);
     }
-
-    setSigning(false);
   };
 
   if (!customer) return <div className="text-zinc-500">Loading...</div>;
@@ -318,59 +366,143 @@ export default function CustomerDashboard() {
         </div>
       )}
 
-      {/* Sign Pending Obligation — standalone, self-custody only */}
+      {/* Pending Signatures — self-custody only */}
       {customer.signingMode === "self-custody" && (
-        <div className="border border-blue-800 rounded-lg p-5 bg-blue-900/20 space-y-3">
-          <h2 className="text-xl font-semibold text-blue-200">Sign Pending Obligation</h2>
-          <p className="text-xs text-blue-400/70">
-            If you have a pending obligation update (e.g. printed by the bounded-buyer demo
-            runner) paste its obligation id, canonical message, and your debtor signing key
-            to sign and commit. Your private key is used only in your browser — it is never
-            sent to the server.
-          </p>
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1">Obligation ID</label>
-            <input
-              value={signObligationId}
-              onChange={(e) => setSignObligationId(e.target.value)}
-              placeholder="obl-..."
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-zinc-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1">Canonical Message</label>
-            <textarea
-              value={signCanonicalMessage}
-              onChange={(e) => setSignCanonicalMessage(e.target.value)}
-              rows={3}
-              placeholder="Paste the canonical message printed by the proxy or demo runner..."
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:border-zinc-500 resize-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-zinc-400 mb-1">Signing Key (hex)</label>
-            <input
-              type="password"
-              value={signingKey}
-              onChange={(e) => setSigningKey(e.target.value)}
-              placeholder="Enter your secp256k1 private key..."
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-zinc-500"
-            />
-            <p className="text-xs text-zinc-600 mt-1">
-              Signing happens entirely in your browser. The key is never transmitted.
-            </p>
-          </div>
-          <button
-            onClick={signPending}
-            disabled={!signObligationId.trim() || !signCanonicalMessage.trim() || !signingKey.trim() || signing}
-            className="px-5 py-2.5 bg-blue-700 text-white rounded text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            {signing ? "Signing..." : "Sign and Commit"}
-          </button>
-          {signResult && (
-            <p className={`text-sm ${signResult.startsWith("Signed") ? "text-green-400" : "text-red-400"}`}>
-              {signResult}
-            </p>
+        <div data-testid="pending-signatures-panel">
+          <h2 className="text-xl font-semibold mb-3">Pending Signatures</h2>
+          {pendingSignatures.length === 0 ? (
+            <div className="border border-dashed border-zinc-700 rounded-lg p-6 text-center text-zinc-500 text-sm">
+              No pending signatures.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingSignatures.map((row) => {
+                const isSubmitting = submittingId === row.id;
+                const err = submitError[row.id];
+                const sigVal = signatureInput[row.id] ?? "";
+                const deltaBig = BigInt(row.delta);
+                const newAmtBig = BigInt(row.newAmount);
+                return (
+                  <div
+                    key={row.id}
+                    data-testid={`pending-card-${row.id}`}
+                    className="border border-blue-800 rounded-lg p-5 bg-blue-900/20 space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-medium text-blue-200">
+                          {row.type === "settlement" ? "Settlement" : "Charge"} for{" "}
+                          {row.obligationState.provider.name} — ${formatCredits(deltaBig)}
+                        </h3>
+                        <p className="text-xs text-zinc-400 mt-1">
+                          Agent:{" "}
+                          <span className="font-mono">
+                            {customer.agentIdentities.find((a) => a.id === row.agentIdentityId)?.label ?? "—"}
+                          </span>{" "}
+                          · {new Date(row.timestamp).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-zinc-500">
+                          New balance after commit: ${formatCredits(newAmtBig)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-xs space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500 w-24">Update ID:</span>
+                        <span
+                          data-testid={`pending-update-id-${row.id}`}
+                          className="font-mono text-zinc-300 truncate"
+                        >
+                          {row.id}
+                        </span>
+                        <button
+                          onClick={() => copyKeyToClipboard(row.id)}
+                          className="ml-auto text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500 w-24">Obligation:</span>
+                        <span className="font-mono text-zinc-400 truncate">
+                          {row.obligationStateId}
+                        </span>
+                      </div>
+                      {row.delegationId && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-zinc-500 w-24">Delegation:</span>
+                          <span className="font-mono text-zinc-400 truncate">
+                            {row.delegationId}
+                          </span>
+                          <button
+                            onClick={() => copyKeyToClipboard(row.delegationId as string)}
+                            className="ml-auto text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs text-zinc-400">
+                          Canonical message to sign
+                        </label>
+                        <button
+                          onClick={() => copyKeyToClipboard(row.canonicalMessage)}
+                          className="text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                        >
+                          Copy canonical
+                        </button>
+                      </div>
+                      <p
+                        data-testid={`pending-canonical-${row.id}`}
+                        className="font-mono text-[11px] bg-zinc-950 border border-zinc-800 rounded px-3 py-2 break-all"
+                      >
+                        {row.canonicalMessage}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">
+                        Signature (hex, no 0x prefix)
+                      </label>
+                      <textarea
+                        data-testid={`pending-signature-input-${row.id}`}
+                        value={sigVal}
+                        onChange={(e) =>
+                          setSignatureInput((m) => ({ ...m, [row.id]: e.target.value }))
+                        }
+                        rows={2}
+                        placeholder="Paste a hex signature produced externally with your debtor or session key..."
+                        disabled={isSubmitting}
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:border-zinc-500 resize-none disabled:opacity-50"
+                      />
+                    </div>
+
+                    <button
+                      data-testid={`pending-submit-${row.id}`}
+                      onClick={() => submitSignature(row)}
+                      disabled={!sigVal.trim() || isSubmitting}
+                      className="px-4 py-2 bg-blue-700 text-white rounded text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {isSubmitting ? "Submitting..." : "Submit Signature"}
+                    </button>
+
+                    {err && (
+                      <p
+                        data-testid={`pending-error-${row.id}`}
+                        className="text-xs text-red-400"
+                      >
+                        {err}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
