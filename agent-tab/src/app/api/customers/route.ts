@@ -24,7 +24,11 @@ export async function GET() {
 
   const customers = await prisma.customer.findMany({
     where,
-    include: { agentIdentities: true, creditLines: { include: { provider: true } }, obligationStates: true },
+    include: {
+      agentIdentities: true,
+      creditLines: { include: { provider: { select: { id: true, name: true } } } },
+      obligationStates: true,
+    },
     orderBy: { createdAt: "desc" },
   });
   const safe = customers.map(({ privateKey: _pk, agentIdentities, ...c }) => ({

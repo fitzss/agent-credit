@@ -40,7 +40,10 @@ export async function GET(req: NextRequest) {
 
   const events = await prisma.usageEvent.findMany({
     where,
-    include: { tool: true, agentIdentity: true },
+    include: {
+      tool: { select: { id: true, name: true } },
+      agentIdentity: { select: { id: true, label: true } },
+    },
     orderBy: { timestamp: "desc" },
     take: limit,
   });
