@@ -6,6 +6,8 @@ Key terms used in Agent Credit, ordered by concept flow.
 
 **Obligation** — A cumulative debt record between a debtor (customer) and creditor (provider). Created off-chain when agents use tools. The core commercial object in the system.
 
+**Work Receipt** — A signed `ObligationUpdate` row, minted by `/api/proxy` only when a tool call is authorized and successfully executed. It records the prior amount, the delta, the new amount, the canonical message, and the signature, and it advances the matching `ObligationState`. Distinct from `UsageEvent`, which is the audit log of every proxy call (including denied and upstream-error outcomes); a `UsageEvent(denied)` exists, a denied "receipt" does not. The dashboard's "Work Receipt" badge in **Recent Agent Activity** corresponds 1:1 to an `ObligationUpdate`; the "Denied" badge corresponds to a `UsageEvent(denied)` with no `ObligationUpdate`.
+
 **Credit Line** — A trust relationship: how much debt a provider allows a customer to accumulate. Governs the relationship, not the agent.
 
 **Delegation** — A signed authorization from a customer's root key to a session key. Bounds what an agent can do: which providers, what spend cap, until when. Governs the agent, not the relationship.

@@ -24,16 +24,20 @@ const outcomeStyles: Record<string, string> = {
 };
 
 const outcomeLabels: Record<string, string> = {
-  success: "Charged",
+  success: "Work Receipt",
   denied: "Denied",
   error: "Upstream Error",
 };
 
 function OutcomeBadge({ outcome }: { outcome: string }) {
   const tooltip =
-    outcome === "denied" || outcome === "error"
-      ? "No obligation update committed; delegation state did not advance."
-      : undefined;
+    outcome === "success"
+      ? "Signed work receipt — obligation advanced."
+      : outcome === "denied"
+        ? "Denied — no work receipt, no state moved."
+        : outcome === "error"
+          ? "Upstream tool error — no work receipt, no state moved."
+          : undefined;
   return (
     <span
       title={tooltip}
@@ -47,7 +51,10 @@ function OutcomeBadge({ outcome }: { outcome: string }) {
 export function ActivityFeed({ events }: Props) {
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-3">Recent Agent Activity</h2>
+      <h2 className="text-xl font-semibold">Recent Agent Activity</h2>
+      <p className="text-xs text-zinc-500 mb-3 mt-1">
+        Each charged call mints a Work Receipt: a signed obligation update.
+      </p>
       {events.length === 0 ? (
         <div className="border border-zinc-800 rounded-lg px-5 py-6 text-center">
           <p className="text-zinc-400 text-sm">

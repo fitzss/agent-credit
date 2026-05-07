@@ -47,6 +47,21 @@ const DEMO_STEPS: CommandStep[] = [
   },
 ];
 
+const REPO_LINT_STEPS: CommandStep[] = [
+  {
+    label: "Seed the repo-lint demo lane (Demo Debtor ↔ Repo Tools)",
+    command:
+      "cd agent-tab && npx tsx scripts/seed-repo-lint-demo.ts --reset && npx tsx scripts/seed-repo-lint-demo.ts --limit-amount 100000000",
+    hint: "Dedicated provider — won't collide with the analyze_text lane. Prints a raw API key once.",
+  },
+  {
+    label: "Run the MCP gateway against the lint tool",
+    command:
+      "AGENT_TAB_MCP_TOOL_NAME=budgeted_repo_lint AGENT_TAB_MCP_INPUT_SHAPE=none AGENT_TAB_TOOL_ID=mcp-demo-tool-repo-lint-001 npx tsx scripts/mcp-gateway/index.ts",
+    hint: "Set AGENT_TAB_BASE_URL and AGENT_TAB_AGENT_KEY from the seeder output. Call once → Work Receipt; call again → Denied.",
+  },
+];
+
 function CommandRow({ step }: { step: CommandStep }) {
   const [copied, setCopied] = useState(false);
 
@@ -133,9 +148,20 @@ export function DemoQuickstart() {
             </div>
           </section>
 
+          <section className="space-y-3">
+            <h4 className="text-xs uppercase tracking-wide text-zinc-500">
+              3. (Optional) Run the repo-lint receipt demo
+            </h4>
+            <div className="space-y-3">
+              {REPO_LINT_STEPS.map((s) => (
+                <CommandRow key={s.label} step={s} />
+              ))}
+            </div>
+          </section>
+
           <section className="space-y-2">
             <h4 className="text-xs uppercase tracking-wide text-zinc-500">
-              3. What success looks like on this page
+              4. What success looks like on this page
             </h4>
             <ul className="text-sm text-zinc-300 space-y-1.5 list-disc list-inside marker:text-zinc-600">
               <li>
@@ -145,8 +171,9 @@ export function DemoQuickstart() {
               <li>
                 <span className="text-zinc-400">Recent Agent Activity</span>{" "}
                 shows one{" "}
-                <span className="text-green-400">Charged</span> row and one{" "}
-                <span className="text-red-400">Denied</span> row.
+                <span className="text-green-400">Work Receipt</span> row and one{" "}
+                <span className="text-red-400">Denied</span> row (no receipt, no
+                state moved).
               </li>
               <li>
                 The charged delegation&apos;s utilization advances by exactly{" "}

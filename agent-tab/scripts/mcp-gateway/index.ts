@@ -19,6 +19,12 @@
  * Optional env:
  *   AGENT_TAB_TIMEOUT_MS       (default 15000)
  *   AGENT_TAB_MCP_TOOL_NAME    (default analyze_text)
+ *   AGENT_TAB_MCP_INPUT_SHAPE  (default text; allowed: text|none)
+ *                              text — input schema { text: string }, forwarded
+ *                                     to the upstream tool as { text }.
+ *                              none — input schema {} (strict), forwarded as
+ *                                     {}; for tools that take no caller input
+ *                                     (e.g. budgeted_repo_lint).
  *
  * Output mapping (Tightening Issue 5):
  *   200          → isError false, "Charge accepted. Tab: $X / $Y used. …"
@@ -51,12 +57,15 @@ function fmtCredits(nanoStr: string | undefined): string {
   return `$${whole.toString()}.${fracPadded}`;
 }
 
+type InputShape = "text" | "none";
+
 function readEnv(): {
   baseUrl: string;
   agentKey: string;
   toolId: string;
   timeoutMs: number;
   toolName: string;
+  inputShape: InputShape;
 } {
   const baseUrl = process.env.AGENT_TAB_BASE_URL;
   const agentKey = process.env.AGENT_TAB_AGENT_KEY;
@@ -80,7 +89,12 @@ function readEnv(): {
     process.exit(2);
   }
   const toolName = process.env.AGENT_TAB_MCP_TOOL_NAME ?? "analyze_text";
-  return { baseUrl, agentKey, toolId, timeoutMs, toolName };
+  const inputShapeRaw = process.env.AGENT_TAB_MCP_INPUT_SHAPE ?? "text";
+  if (inputShapeRaw !== "text" && inputShapeRaw !== "none") {
+    process.stderr.write(`AGENT_TAB_MCP_INPUT_SHAPE must be "text" or "none" (got "${inputShapeRaw}")\n`);
+    process.exit(2);
+  }
+  return { baseUrl, agentKey, toolId, timeoutMs, toolName, inputShape: inputShapeRaw };
 }
 
 type ToolResultContent = { type: "text"; text: string };
@@ -154,11 +168,12 @@ function buildDeniedCapText(body: ProxyError): string {
 
 async function callProxy(
   cfg: ReturnType<typeof readEnv>,
-  text: string,
+  text: string | null,
 ): Promise<ToolResult> {
   const url = `${cfg.baseUrl.replace(/\/$/, "")}/api/proxy`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
+  const payload = text === null ? "{}" : JSON.stringify({ text });
   let res: Response;
   try {
     res = await fetch(url, {
@@ -168,7 +183,7 @@ async function callProxy(
         "x-tool-id": cfg.toolId,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text }),
+      body: payload,
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -260,20 +275,33 @@ async function main() {
 
   // .strict() rejects any unknown property at runtime — the model cannot pass
   // x-agent-api-key, toolId, or any other field as an argument.
-  const inputSchema = z
-    .object({ text: z.string().min(1).describe("Text to analyze.") })
-    .strict();
-
-  server.registerTool(
-    cfg.toolName,
-    {
-      description: "Analyze a piece of text via Agent Tab. Each call is metered against the agent's tab; the tab will refuse calls beyond its limit.",
-      inputSchema,
-    },
-    async (args: { text: string }) => {
-      return callProxy(cfg, args.text);
-    },
-  );
+  if (cfg.inputShape === "text") {
+    const inputSchema = z
+      .object({ text: z.string().min(1).describe("Text to analyze.") })
+      .strict();
+    server.registerTool(
+      cfg.toolName,
+      {
+        description: "Analyze a piece of text via Agent Tab. Each call is metered against the agent's tab; the tab will refuse calls beyond its limit.",
+        inputSchema,
+      },
+      async (args: { text: string }) => {
+        return callProxy(cfg, args.text);
+      },
+    );
+  } else {
+    const inputSchema = z.object({}).strict();
+    server.registerTool(
+      cfg.toolName,
+      {
+        description: "Run a budgeted demo task via Agent Tab. Takes no arguments. Each call is metered against the agent's tab; the tab will refuse calls beyond its limit.",
+        inputSchema,
+      },
+      async () => {
+        return callProxy(cfg, null);
+      },
+    );
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -281,7 +309,7 @@ async function main() {
   // Ready log goes to stderr ONLY — stdout is reserved for the MCP protocol.
   // Never log the agent key.
   process.stderr.write(
-    `[mcp-gateway] ready: tool=${cfg.toolName}, base=${cfg.baseUrl}, toolId=${cfg.toolId}\n`,
+    `[mcp-gateway] ready: tool=${cfg.toolName}, shape=${cfg.inputShape}, base=${cfg.baseUrl}, toolId=${cfg.toolId}\n`,
   );
 }
 
