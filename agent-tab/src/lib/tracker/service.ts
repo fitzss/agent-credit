@@ -21,7 +21,7 @@ import {
  */
 
 // --- Constants ---
-const PENDING_TTL_MS = 15 * 60 * 1000; // 15 minutes — pending updates expire after this
+export const PENDING_TTL_MS = 15 * 60 * 1000; // 15 minutes — pending updates expire after this
 
 import { NANOCREDITS_PER_CREDIT, nanoCreditsToNanoErg } from "@/lib/credits";
 

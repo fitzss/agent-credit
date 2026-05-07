@@ -26,6 +26,7 @@
 import { PrismaClient } from "@prisma/client";
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
+import { operatorCookieHeader } from "./lib/test-session";
 
 const AGENT_1_ID = "auth-demo-agent-001";
 const AGENT_2_ID = "auth-demo-agent-002";
@@ -88,6 +89,10 @@ async function main() {
   const rootKeyData = JSON.parse(fs.readFileSync(ROOT_KEY_FILE, "utf-8"));
   const rootPubKey: string = rootKeyData.publicKey;
   const rootPrivKey: string = rootKeyData.privateKey;
+
+  // Slice 3: /api/pool/summary now requires a session. Mint an operator
+  // cookie locally; same JWT shape a real magic-link login produces.
+  const COOKIE = await operatorCookieHeader(prisma);
 
   // ================================================================
   // Test 1: Wrong provider scope
@@ -256,7 +261,7 @@ async function main() {
 
       const createRes = await fetch(`${BASE}/api/delegations`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({
           customerId: CUSTOMER_ID,
           agentIdentityId: AGENT_1_ID,
@@ -274,7 +279,7 @@ async function main() {
       // Revoke it
       await fetch(`${BASE}/api/delegations`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({ id: delegationId }),
       });
 
@@ -367,7 +372,7 @@ async function main() {
 
       const res = await fetch(`${BASE}/api/delegations`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: COOKIE },
         body: JSON.stringify({
           customerId: CUSTOMER_ID,
           agentIdentityId: "nonexistent-agent-id",
@@ -446,7 +451,7 @@ async function main() {
         const sessionSig = await signMessage(proxyData.tab.canonicalMessage, session1.privateKey);
         const signRes = await fetch(`${BASE}/api/obligations/${proxyData.tab.obligationId}/sign`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Cookie: COOKIE },
           body: JSON.stringify({
             signature: sessionSig,
             updateId: proxyData.tab.updateId,
@@ -514,7 +519,10 @@ async function main() {
       }
 
       // Check pool summary labels it as unbound
-      const poolRes = await fetch(`${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`);
+      const poolRes = await fetch(
+        `${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`,
+        { headers: { Cookie: COOKIE } },
+      );
       const poolData = await poolRes.json();
       const legacyDel = poolData.authority?.delegations?.find(
         (d: { id: string }) => d.id === testId

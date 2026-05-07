@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { recordTrackerDeployment, computeCumulativeTrackerDebt } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
 
@@ -15,6 +16,12 @@ const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
  * Records the deployment in TrackerDeployment for lifecycle tracking.
  */
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const { reserveId, obligationId } = await req.json();
 
   if (!reserveId || !obligationId) {

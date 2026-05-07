@@ -8,9 +8,26 @@ import { formatCredits } from "@/lib/credits";
 interface AgentIdentity {
   id: string;
   label: string;
-  apiKey: string;
+  apiKeyPreview: string | null;
   allowedToolIds: string;
   status: string;
+}
+
+interface PendingSignature {
+  id: string;                    // updateId
+  obligationStateId: string;     // obligationId
+  canonicalMessage: string;
+  delta: string;                 // BigInt nanoCredits, serialised as string
+  newAmount: string;             // BigInt nanoCredits, serialised as string
+  type: string;                  // "charge" | "settlement"
+  delegationId: string | null;
+  agentIdentityId: string | null;
+  timestamp: string;
+  obligationState: {
+    id: string;
+    providerId: string;
+    provider: { id: string; name: string };
+  };
 }
 
 interface CreditLine {
@@ -52,25 +69,6 @@ interface ToolInfo {
   provider: { name: string };
 }
 
-interface ProxyResult {
-  toolResponse: Record<string, unknown>;
-  toolStatus: number;
-  tab: {
-    balance: string;
-    limit: string;
-    remaining: string;
-    utilization: number;
-    version: number;
-    signature: string | null;
-    alert: string | null;
-    charged?: boolean;
-    pendingSignature?: boolean;
-    canonicalMessage?: string;
-    obligationId?: string;
-  };
-  error?: string;
-}
-
 interface Customer {
   id: string;
   name: string;
@@ -92,19 +90,22 @@ export default function CustomerDashboard() {
   // Agent form
   const [showAgentForm, setShowAgentForm] = useState(false);
   const [agentLabel, setAgentLabel] = useState("");
+  const [lastCreatedApiKey, setLastCreatedApiKey] = useState<string | null>(null);
+  const [lastKeyContext, setLastKeyContext] = useState<"created" | "rotated" | null>(null);
 
-  // Try It panel
-  const [tryAgent, setTryAgent] = useState("");
-  const [tryTool, setTryTool] = useState("");
-  const [tryInput, setTryInput] = useState("");
-  const [tryRunning, setTryRunning] = useState(false);
-  const [tryResult, setTryResult] = useState<ProxyResult | null>(null);
-  const [tryError, setTryError] = useState<string | null>(null);
+  // Per-card lifecycle state for Revoke / Reactivate / Rotate buttons
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [confirmRotateId, setConfirmRotateId] = useState<string | null>(null);
+  const [actingOnId, setActingOnId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<Record<string, string>>({});
 
-  // Self-custody signing
-  const [signingKey, setSigningKey] = useState("");
-  const [signing, setSigning] = useState(false);
-  const [signResult, setSignResult] = useState<string | null>(null);
+  // Self-custody pending signatures: each pending ObligationUpdate is one card
+  // in the panel. Signatures are produced externally and pasted in. The UI
+  // never sees a private key.
+  const [pendingSignatures, setPendingSignatures] = useState<PendingSignature[]>([]);
+  const [signatureInput, setSignatureInput] = useState<Record<string, string>>({});
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Record<string, string>>({});
 
   const load = useCallback(() => {
     fetch("/api/customers")
@@ -134,90 +135,157 @@ export default function CustomerDashboard() {
   const createAgent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!agentLabel.trim()) return;
-    await fetch("/api/agent-identities", {
+    const res = await fetch("/api/agent-identities", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ customerId: id, label: agentLabel }),
     });
+    if (res.ok) {
+      const created = await res.json();
+      if (typeof created?.apiKey === "string") {
+        // One-time display: held in component memory only. Not persisted.
+        setLastCreatedApiKey(created.apiKey);
+        setLastKeyContext("created");
+      }
+    }
     setAgentLabel("");
     setShowAgentForm(false);
     load();
   };
 
-  const runOnCredit = async () => {
-    if (!tryAgent || !tryTool || !tryInput.trim()) return;
-    setTryRunning(true);
-    setTryResult(null);
-    setTryError(null);
-
-    const agent = customer?.agentIdentities.find((a) => a.id === tryAgent);
-    if (!agent) { setTryError("Agent not found"); setTryRunning(false); return; }
-
-    const selectedTool = tools.find((t) => t.id === tryTool);
-    const isCompletion = selectedTool?.name === "LLM Completion";
-    const body = isCompletion
-      ? { prompt: tryInput }
-      : { text: tryInput };
-
-    try {
-      const res = await fetch("/api/proxy", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-agent-api-key": agent.apiKey,
-          "x-tool-id": tryTool,
-        },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.error && !data.tab) {
-        setTryError(data.error);
-      } else {
-        setTryResult(data);
-      }
-    } catch {
-      setTryError("Request failed");
-    }
-
-    setTryRunning(false);
-    setSignResult(null);
-    load();
+  const clearAgentError = (agentId: string) => {
+    setActionError((m) => {
+      if (!(agentId in m)) return m;
+      const next = { ...m };
+      delete next[agentId];
+      return next;
+    });
   };
 
-  const signPending = async () => {
-    if (!tryResult?.tab.pendingSignature || !tryResult.tab.canonicalMessage || !signingKey) return;
-    setSigning(true);
-    setSignResult(null);
-
+  const patchAgentStatus = async (
+    agentId: string,
+    status: "active" | "revoked",
+  ) => {
+    setActingOnId(agentId);
+    clearAgentError(agentId);
     try {
-      // Sign client-side using @noble/secp256k1
-      const secp = await import("@noble/secp256k1");
-      const msgBytes = new TextEncoder().encode(tryResult.tab.canonicalMessage);
-      const hashBuffer = await crypto.subtle.digest("SHA-256", msgBytes);
-      const msgHash = new Uint8Array(hashBuffer);
-      const privKeyBytes = secp.etc.hexToBytes(signingKey);
-      const sig = secp.sign(msgHash, privKeyBytes);
-      const sigHex = secp.etc.bytesToHex(sig);
+      const res = await fetch(`/api/agent-identities/${agentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
+      setConfirmRevokeId((id) => (id === agentId ? null : id));
+      load();
+    } catch (e) {
+      setActionError((m) => ({ ...m, [agentId]: (e as Error).message }));
+    } finally {
+      setActingOnId(null);
+    }
+  };
 
-      // Send to tracker for verification and commitment
-      const res = await fetch(`/api/obligations/${tryResult.tab.obligationId}/sign`, {
+  const rotateAgentKey = async (agentId: string) => {
+    setActingOnId(agentId);
+    clearAgentError(agentId);
+    try {
+      const res = await fetch(`/api/agent-identities/${agentId}/rotate`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (typeof data?.apiKey === "string") {
+        // One-time display: held in component memory only. Not persisted.
+        setLastCreatedApiKey(data.apiKey);
+        setLastKeyContext("rotated");
+      }
+      setConfirmRotateId((id) => (id === agentId ? null : id));
+      load();
+    } catch (e) {
+      setActionError((m) => ({ ...m, [agentId]: (e as Error).message }));
+    } finally {
+      setActingOnId(null);
+    }
+  };
+
+  const copyKeyToClipboard = async (key: string) => {
+    try {
+      await navigator.clipboard.writeText(key);
+    } catch {
+      // Clipboard write rejected (permissions/insecure context).
+      // Fail silently — user still has the key visible to copy manually.
+    }
+  };
+
+  const fetchPendingSignatures = useCallback(async () => {
+    if (!customer || customer.signingMode !== "self-custody") {
+      setPendingSignatures([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/customers/${id}/pending-signatures`);
+      if (!res.ok) {
+        setPendingSignatures([]);
+        return;
+      }
+      const data = await res.json();
+      setPendingSignatures(Array.isArray(data) ? (data as PendingSignature[]) : []);
+    } catch {
+      setPendingSignatures([]);
+    }
+  }, [customer, id]);
+
+  useEffect(() => {
+    fetchPendingSignatures();
+  }, [fetchPendingSignatures]);
+
+  const submitSignature = async (row: PendingSignature) => {
+    const sig = (signatureInput[row.id] ?? "").trim();
+    if (!sig) {
+      setSubmitError((m) => ({ ...m, [row.id]: "Signature is required" }));
+      return;
+    }
+    setSubmittingId(row.id);
+    setSubmitError((m) => {
+      if (!(row.id in m)) return m;
+      const next = { ...m };
+      delete next[row.id];
+      return next;
+    });
+    try {
+      const body: { signature: string; updateId: string; delegationId?: string } = {
+        signature: sig,
+        updateId: row.id,
+      };
+      if (row.delegationId) body.delegationId = row.delegationId;
+      const res = await fetch(`/api/obligations/${row.obligationStateId}/sign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signature: sigHex }),
+        body: JSON.stringify(body),
       });
-      const data = await res.json();
-
-      if (data.error) {
-        setSignResult(`Failed: ${data.error}`);
-      } else {
-        setSignResult("Signed and verified by tracker");
-        load();
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
       }
+      // Success: clear that row's input and refresh both pending list and
+      // customer state. The signed row will disappear from pendingSignatures.
+      setSignatureInput((m) => {
+        const next = { ...m };
+        delete next[row.id];
+        return next;
+      });
+      await fetchPendingSignatures();
+      load();
     } catch (e) {
-      setSignResult(`Signing error: ${String(e)}`);
+      setSubmitError((m) => ({ ...m, [row.id]: (e as Error).message }));
+    } finally {
+      setSubmittingId(null);
     }
-
-    setSigning(false);
   };
 
   if (!customer) return <div className="text-zinc-500">Loading...</div>;
@@ -283,183 +351,157 @@ export default function CustomerDashboard() {
         </div>
       )}
 
-      {/* Try It Panel */}
+      {/* Run a Tool on Credit — informational card */}
       {customer.agentIdentities.length > 0 && tools.length > 0 && (
         <div className="border border-zinc-700 rounded-lg p-5 bg-zinc-900/50">
-          <h2 className="text-xl font-semibold mb-4">Try It — Run a Tool on Credit</h2>
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">Agent</label>
-              <select
-                value={tryAgent}
-                onChange={(e) => setTryAgent(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
-              >
-                <option value="">Select agent...</option>
-                {customer.agentIdentities.filter((a) => a.status === "active").map((a) => (
-                  <option key={a.id} value={a.id}>{a.label}</option>
-                ))}
-              </select>
+          <h2 className="text-xl font-semibold mb-2">Run a Tool on Credit</h2>
+          <p className="text-sm text-zinc-400">
+            Raw agent API keys are only shown once at agent creation. To call{" "}
+            <code className="font-mono text-xs">/api/proxy</code> from this dashboard a future
+            build will provide a &ldquo;reveal key&rdquo; flow. For now, use the API key
+            copied at creation time, or run the bounded-buyer demo
+            (<code className="font-mono text-xs">bash scripts/demo-bounded-buyer.sh</code>),
+            which exercises the full proxy flow end-to-end.
+          </p>
+        </div>
+      )}
+
+      {/* Pending Signatures — self-custody only */}
+      {customer.signingMode === "self-custody" && (
+        <div data-testid="pending-signatures-panel">
+          <h2 className="text-xl font-semibold mb-3">Pending Signatures</h2>
+          {pendingSignatures.length === 0 ? (
+            <div className="border border-dashed border-zinc-700 rounded-lg p-6 text-center text-zinc-500 text-sm">
+              No pending signatures.
             </div>
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">Tool</label>
-              <select
-                value={tryTool}
-                onChange={(e) => setTryTool(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-zinc-500"
-              >
-                <option value="">Select tool...</option>
-                {tools.filter((t) => {
-                  const providerIds = customer.creditLines.map((l) => l.providerId);
-                  return providerIds.includes(t.providerId) && t.status === "active";
-                }).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.provider.name}) — ${formatCredits(BigInt(t.costPerCall))}/call
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="mb-3">
-            <label className="block text-sm text-zinc-400 mb-1">Input</label>
-            <textarea
-              value={tryInput}
-              onChange={(e) => setTryInput(e.target.value)}
-              rows={2}
-              placeholder={tools.find((t) => t.id === tryTool)?.name === "LLM Completion"
-                ? "Enter a prompt for the LLM..."
-                : "Enter text to analyze..."}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-zinc-500 resize-none"
-            />
-          </div>
-          <button
-            onClick={runOnCredit}
-            disabled={!tryAgent || !tryTool || !tryInput.trim() || tryRunning}
-            className="px-5 py-2.5 bg-white text-black rounded text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            {tryRunning ? "Running..." : "Run on Credit"}
-          </button>
-
-          {/* Result */}
-          {tryError && (
-            <div className="mt-4 border border-red-800 rounded-lg p-4 bg-red-900/20">
-              <p className="text-sm text-red-400">{tryError}</p>
-            </div>
-          )}
-          {tryResult && (
-            <div className="mt-4 space-y-3">
-              {/* Success vs failure banner */}
-              {tryResult.tab.charged === false ? (
-                <div className="border border-yellow-800 rounded-lg p-4 bg-yellow-900/20">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-yellow-400" />
-                    <span className="text-sm font-medium text-yellow-400">Tool failed — not charged</span>
-                  </div>
-                  <p className="text-xs text-yellow-400/70 mt-1">
-                    The upstream tool returned an error (status {tryResult.toolStatus}).
-                    No debt was created and the obligation is unchanged.
-                  </p>
-                </div>
-              ) : (
-                <div className="border border-green-800 rounded-lg p-4 bg-green-900/20">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-green-400" />
-                    <span className="text-sm font-medium text-green-400">
-                      Service delivered — charged ${formatCredits(BigInt(tools.find((t) => t.id === tryTool)?.costPerCall ?? "0"))}
-                    </span>
-                  </div>
-                  <p className="text-xs text-green-400/70 mt-1">
-                    Obligation updated to v{tryResult.tab.version}, signed by debtor.
-                  </p>
-                </div>
-              )}
-
-              {/* Tool response */}
-              <div className="border border-zinc-700 rounded-lg p-4">
-                <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">
-                  {tryResult.tab.charged === false ? "Error Detail" : "Tool Response"}
-                </p>
-                <pre className="text-sm font-mono whitespace-pre-wrap break-all text-zinc-300 bg-zinc-900 p-3 rounded max-h-48 overflow-auto">
-                  {typeof tryResult.toolResponse === "object"
-                    ? JSON.stringify(tryResult.toolResponse, null, 2)
-                    : String(tryResult.toolResponse)}
-                </pre>
-              </div>
-
-              {/* Tab state */}
-              <div className="grid grid-cols-4 gap-3">
-                <div className={`border rounded p-3 ${tryResult.tab.charged === false ? "border-zinc-800" : "border-green-900"}`}>
-                  <p className="text-xs text-zinc-500">Charged</p>
-                  <p className={`font-mono text-lg mt-1 ${tryResult.tab.charged === false ? "text-zinc-500" : "text-green-400"}`}>
-                    {tryResult.tab.charged === false ? "$0.00" : `+$${formatCredits(BigInt(tools.find((t) => t.id === tryTool)?.costPerCall ?? "0"))}`}
-                  </p>
-                </div>
-                <div className="border border-zinc-700 rounded p-3">
-                  <p className="text-xs text-zinc-500">Balance</p>
-                  <p className="font-mono text-lg mt-1">${formatCredits(BigInt(tryResult.tab.balance))}</p>
-                </div>
-                <div className="border border-zinc-700 rounded p-3">
-                  <p className="text-xs text-zinc-500">Remaining</p>
-                  <p className="font-mono text-lg mt-1">${formatCredits(BigInt(tryResult.tab.remaining))}</p>
-                </div>
-                <div className="border border-zinc-700 rounded p-3">
-                  <p className="text-xs text-zinc-500">Version</p>
-                  <p className="font-mono text-lg mt-1">v{tryResult.tab.version}</p>
-                </div>
-              </div>
-              {tryResult.tab.signature && tryResult.tab.charged !== false && (
-                <p className="text-xs text-zinc-500">
-                  Signed: <span className="font-mono">{tryResult.tab.signature.slice(0, 24)}...</span>
-                </p>
-              )}
-
-              {/* Self-custody signing panel */}
-              {tryResult.tab.pendingSignature && (
-                <div className="border border-blue-800 rounded-lg p-4 bg-blue-900/20 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-blue-400" />
-                    <span className="text-sm font-medium text-blue-400">
-                      Pending your signature
-                    </span>
-                  </div>
-                  <p className="text-xs text-blue-400/70">
-                    This obligation update requires your signature. The tracker has recorded the
-                    charge but the obligation state will not be finalized until you sign.
-                    Your private key is used only in your browser — it is never sent to the server.
-                  </p>
-                  <div>
-                    <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Message to Sign</p>
-                    <p className="font-mono text-xs break-all bg-zinc-900 p-2 rounded text-zinc-400">
-                      {tryResult.tab.canonicalMessage}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-zinc-400 mb-1">Your Private Key (hex)</label>
-                    <input
-                      type="password"
-                      value={signingKey}
-                      onChange={(e) => setSigningKey(e.target.value)}
-                      placeholder="Enter your secp256k1 private key..."
-                      className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-zinc-500"
-                    />
-                    <p className="text-xs text-zinc-600 mt-1">
-                      Signing happens entirely in your browser. The key is never transmitted.
-                    </p>
-                  </div>
-                  <button
-                    onClick={signPending}
-                    disabled={!signingKey || signing}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium transition-colors disabled:opacity-30"
+          ) : (
+            <div className="space-y-3">
+              {pendingSignatures.map((row) => {
+                const isSubmitting = submittingId === row.id;
+                const err = submitError[row.id];
+                const sigVal = signatureInput[row.id] ?? "";
+                const deltaBig = BigInt(row.delta);
+                const newAmtBig = BigInt(row.newAmount);
+                return (
+                  <div
+                    key={row.id}
+                    data-testid={`pending-card-${row.id}`}
+                    className="border border-blue-800 rounded-lg p-5 bg-blue-900/20 space-y-3"
                   >
-                    {signing ? "Signing..." : "Sign Obligation"}
-                  </button>
-                  {signResult && (
-                    <p className={`text-sm ${signResult.startsWith("Signed") ? "text-green-400" : "text-red-400"}`}>
-                      {signResult}
-                    </p>
-                  )}
-                </div>
-              )}
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-medium text-blue-200">
+                          {row.type === "settlement" ? "Settlement" : "Charge"} for{" "}
+                          {row.obligationState.provider.name} — ${formatCredits(deltaBig)}
+                        </h3>
+                        <p className="text-xs text-zinc-400 mt-1">
+                          Agent:{" "}
+                          <span className="font-mono">
+                            {customer.agentIdentities.find((a) => a.id === row.agentIdentityId)?.label ?? "—"}
+                          </span>{" "}
+                          · {new Date(row.timestamp).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-zinc-500">
+                          New balance after commit: ${formatCredits(newAmtBig)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-xs space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500 w-24">Update ID:</span>
+                        <span
+                          data-testid={`pending-update-id-${row.id}`}
+                          className="font-mono text-zinc-300 truncate"
+                        >
+                          {row.id}
+                        </span>
+                        <button
+                          onClick={() => copyKeyToClipboard(row.id)}
+                          className="ml-auto text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500 w-24">Obligation:</span>
+                        <span className="font-mono text-zinc-400 truncate">
+                          {row.obligationStateId}
+                        </span>
+                      </div>
+                      {row.delegationId && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-zinc-500 w-24">Delegation:</span>
+                          <span className="font-mono text-zinc-400 truncate">
+                            {row.delegationId}
+                          </span>
+                          <button
+                            onClick={() => copyKeyToClipboard(row.delegationId as string)}
+                            className="ml-auto text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs text-zinc-400">
+                          Canonical message to sign
+                        </label>
+                        <button
+                          onClick={() => copyKeyToClipboard(row.canonicalMessage)}
+                          className="text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded"
+                        >
+                          Copy canonical
+                        </button>
+                      </div>
+                      <p
+                        data-testid={`pending-canonical-${row.id}`}
+                        className="font-mono text-[11px] bg-zinc-950 border border-zinc-800 rounded px-3 py-2 break-all"
+                      >
+                        {row.canonicalMessage}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">
+                        Signature (hex, no 0x prefix)
+                      </label>
+                      <textarea
+                        data-testid={`pending-signature-input-${row.id}`}
+                        value={sigVal}
+                        onChange={(e) =>
+                          setSignatureInput((m) => ({ ...m, [row.id]: e.target.value }))
+                        }
+                        rows={2}
+                        placeholder="Paste a hex signature produced externally with your debtor or session key..."
+                        disabled={isSubmitting}
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs font-mono focus:outline-none focus:border-zinc-500 resize-none disabled:opacity-50"
+                      />
+                    </div>
+
+                    <button
+                      data-testid={`pending-submit-${row.id}`}
+                      onClick={() => submitSignature(row)}
+                      disabled={!sigVal.trim() || isSubmitting}
+                      className="px-4 py-2 bg-blue-700 text-white rounded text-sm font-medium hover:bg-blue-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {isSubmitting ? "Submitting..." : "Submit Signature"}
+                    </button>
+
+                    {err && (
+                      <p
+                        data-testid={`pending-error-${row.id}`}
+                        className="text-xs text-red-400"
+                      >
+                        {err}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -567,6 +609,47 @@ export default function CustomerDashboard() {
           </button>
         </div>
 
+        {lastCreatedApiKey && (
+          <div
+            data-testid="one-time-key-banner"
+            className="border border-yellow-700 bg-yellow-900/20 rounded-lg p-4 mb-4"
+          >
+            <h3 className="font-medium text-yellow-200 mb-1">
+              {lastKeyContext === "rotated"
+                ? "Rotated agent API key — shown once"
+                : "New agent API key — shown once"}
+            </h3>
+            <p className="text-sm text-zinc-300 mb-2">
+              {lastKeyContext === "rotated"
+                ? "The previous key has been invalidated. Save this new key now — after dismissing this banner only the last 4 characters will be shown."
+                : "Save this now. After dismissing this banner the full key will not be shown again — only the last 4 characters."}
+            </p>
+            <p
+              data-testid="one-time-key-value"
+              className="font-mono text-sm bg-zinc-950 border border-zinc-800 rounded px-3 py-2 mb-3 break-all"
+            >
+              {lastCreatedApiKey}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => copyKeyToClipboard(lastCreatedApiKey)}
+                className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-white text-sm rounded"
+              >
+                Copy
+              </button>
+              <button
+                onClick={() => {
+                  setLastCreatedApiKey(null);
+                  setLastKeyContext(null);
+                }}
+                className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 text-white text-sm rounded"
+              >
+                I&apos;ve saved it — dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {showAgentForm && (
           <form onSubmit={createAgent} className="border border-zinc-700 rounded-lg p-4 space-y-3 bg-zinc-900 mb-3">
             <div>
@@ -593,19 +676,130 @@ export default function CustomerDashboard() {
         )}
 
         <div className="space-y-3">
-          {customer.agentIdentities.map((agent) => (
-            <div key={agent.id} className="border border-zinc-800 rounded-lg p-4">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="font-medium">{agent.label}</h3>
-                  <p className="text-xs text-zinc-500 mt-1 font-mono">
-                    API Key: {agent.apiKey}
-                  </p>
+          {customer.agentIdentities.map((agent) => {
+            const isActing = actingOnId === agent.id;
+            const isConfirmingRevoke = confirmRevokeId === agent.id;
+            const isConfirmingRotate = confirmRotateId === agent.id;
+            const err = actionError[agent.id];
+            const inConfirm = isConfirmingRevoke || isConfirmingRotate;
+            return (
+              <div
+                key={agent.id}
+                data-testid={`agent-card-${agent.id}`}
+                className="border border-zinc-800 rounded-lg p-4"
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h3 className="font-medium">{agent.label}</h3>
+                    <p className="text-xs text-zinc-500 mt-1 font-mono">
+                      API Key: <span className="text-zinc-400">{agent.apiKeyPreview ?? "—"}</span>
+                    </p>
+                    <p className="text-[10px] text-zinc-600 mt-0.5">
+                      Full key shown once at creation or rotation.
+                    </p>
+                  </div>
+                  <StatusBadge status={agent.status} />
                 </div>
-                <StatusBadge status={agent.status} />
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  {!inConfirm && agent.status === "active" && (
+                    <button
+                      data-testid={`agent-revoke-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        setConfirmRotateId(null);
+                        setConfirmRevokeId(agent.id);
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-red-400 border border-red-800/50 rounded hover:bg-red-900/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Revoke
+                    </button>
+                  )}
+                  {!inConfirm && agent.status === "revoked" && (
+                    <button
+                      data-testid={`agent-reactivate-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        patchAgentStatus(agent.id, "active");
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-green-400 border border-green-800/50 rounded hover:bg-green-900/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Reactivate
+                    </button>
+                  )}
+                  {!inConfirm && (
+                    <button
+                      data-testid={`agent-rotate-${agent.id}`}
+                      onClick={() => {
+                        clearAgentError(agent.id);
+                        setConfirmRevokeId(null);
+                        setConfirmRotateId(agent.id);
+                      }}
+                      disabled={isActing}
+                      className="text-sm px-2.5 py-1 text-zinc-300 border border-zinc-700 rounded hover:bg-zinc-800 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      Rotate Key
+                    </button>
+                  )}
+
+                  {isConfirmingRevoke && (
+                    <>
+                      <span className="text-xs text-zinc-400">Revoke this agent?</span>
+                      <button
+                        data-testid={`agent-confirm-revoke-${agent.id}`}
+                        onClick={() => patchAgentStatus(agent.id, "revoked")}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-red-700 hover:bg-red-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        {isActing ? "Revoking..." : "Confirm Revoke"}
+                      </button>
+                      <button
+                        data-testid={`agent-cancel-revoke-${agent.id}`}
+                        onClick={() => setConfirmRevokeId(null)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+
+                  {isConfirmingRotate && (
+                    <>
+                      <span className="text-xs text-zinc-400">
+                        Old key stops working immediately.
+                      </span>
+                      <button
+                        data-testid={`agent-confirm-rotate-${agent.id}`}
+                        onClick={() => rotateAgentKey(agent.id)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-200 hover:bg-white text-black rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        {isActing ? "Rotating..." : "Confirm Rotate"}
+                      </button>
+                      <button
+                        data-testid={`agent-cancel-rotate-${agent.id}`}
+                        onClick={() => setConfirmRotateId(null)}
+                        disabled={isActing}
+                        className="text-sm px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+                {err && (
+                  <p
+                    data-testid={`agent-error-${agent.id}`}
+                    className="text-xs text-red-400 mt-2"
+                  >
+                    {err}
+                  </p>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           {customer.agentIdentities.length === 0 && (
             <div className="border border-dashed border-zinc-700 rounded-lg p-8 text-center text-zinc-500">
               No agent identities yet
@@ -670,6 +864,7 @@ function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     active: "bg-green-900/50 text-green-400",
     success: "bg-green-900/50 text-green-400",
+    revoked: "bg-zinc-800 text-zinc-400",
     denied: "bg-red-900/50 text-red-400",
     error: "bg-red-900/50 text-red-400",
   };

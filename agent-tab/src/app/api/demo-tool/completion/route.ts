@@ -10,6 +10,13 @@ import { NextRequest, NextResponse } from "next/server";
  * Returns: { completion: string, model: string, usage: {...}, timestamp: string }
  */
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "demo tools disabled in production" },
+      { status: 403 },
+    );
+  }
+
   const apiKey = process.env.UPSTREAM_LLM_API_KEY;
 
   if (!apiKey) {

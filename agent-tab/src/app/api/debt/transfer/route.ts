@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { parseCredits, nanoCreditsToNanoErg } from "@/lib/credits";
 import { computeCumulativeTrackerDebt } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
+import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
 /**
  * POST /api/debt/transfer
@@ -21,8 +22,21 @@ import { NextRequest, NextResponse } from "next/server";
  * 3. Source has sufficient currentAmount
  * 4. No pending redemption for either obligation
  * 5. Redeemed-floor: source pair's post-transfer totalDebt >= previouslyRedeemed
+ *
+ * Order-of-checks rationale (slice 10b): auth → required-fields/amount/self
+ * → load both rows → role/ownership decision (phase 2) → same-debtor equality
+ * (phase 3) → existing pubKey/balance/pending/redeemed-floor guardrails →
+ * atomic transaction. Phase 2 must run before phase 3 so customer-role users
+ * cannot use the same-debtor 400 to enumerate foreign obligation ids.
  */
 export async function POST(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const { fromObligationId, toObligationId, amountCredits } = await req.json();
 
   if (!fromObligationId || !toObligationId || !amountCredits) {
@@ -51,14 +65,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Cannot transfer to the same obligation" }, { status: 400 });
   }
 
-  // --- Load obligations ---
+  // --- Phase 1: Load both obligations (no role-aware decisions) ---
   const fromOb = await prisma.obligationState.findUnique({ where: { id: fromObligationId } });
-  if (!fromOb) return NextResponse.json({ error: "Source obligation not found" }, { status: 404 });
-
   const toOb = await prisma.obligationState.findUnique({ where: { id: toObligationId } });
-  if (!toOb) return NextResponse.json({ error: "Target obligation not found" }, { status: 404 });
 
-  // --- Guardrail 2: Same debtor ---
+  // --- Phase 2: Role/ownership decision (must run BEFORE phase 3 same-debtor check) ---
+  if (user.role === "operator") {
+    if (!fromOb) return NextResponse.json({ error: "Source obligation not found" }, { status: 404 });
+    if (!toOb) return NextResponse.json({ error: "Target obligation not found" }, { status: 404 });
+  } else {
+    const ownedIds = await ownedCustomerIds(user);
+    if (
+      !fromOb ||
+      !toOb ||
+      !ownedIds ||
+      !ownedIds.includes(fromOb.customerId) ||
+      !ownedIds.includes(toOb.customerId)
+    ) {
+      return NextResponse.json(
+        { error: "customer not owned by current user" },
+        { status: 403 }
+      );
+    }
+  }
+
+  // --- Phase 3: Same debtor (only reached after ownership confirmed) ---
   if (fromOb.customerId !== toOb.customerId) {
     return NextResponse.json({
       error: "Obligations must belong to the same debtor (customer)",

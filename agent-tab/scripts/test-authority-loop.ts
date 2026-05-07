@@ -25,6 +25,7 @@
 
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
+import { operatorCookieHeader } from "./lib/test-session";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -60,17 +61,17 @@ async function post(url: string, body: unknown, headers?: Record<string, string>
   return { status: res.status, data: await res.json() };
 }
 
-async function del(url: string, body: unknown) {
+async function del(url: string, body: unknown, headers?: Record<string, string>) {
   const res = await fetch(url, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: await res.json() };
 }
 
-async function get(url: string) {
-  const res = await fetch(url);
+async function get(url: string, headers?: Record<string, string>) {
+  const res = await fetch(url, { headers });
   return { status: res.status, data: await res.json() };
 }
 
@@ -89,8 +90,11 @@ interface PoolDelegation {
   agentLabel: string | null;
 }
 
-async function getPoolState() {
-  const { data } = await get(`${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`);
+async function getPoolState(cookie: string) {
+  const { data } = await get(
+    `${BASE}/api/pool/summary?reserveId=${RESERVE_ID}`,
+    { Cookie: cookie },
+  );
   const obligation = data.obligations?.find((o: PoolObligation) => o.id === OBLIGATION_ID);
   return {
     obligationBalance: BigInt(obligation?.currentAmount ?? "0"),
@@ -115,8 +119,12 @@ async function main() {
   const rootPubKey: string = rootKeyData.publicKey;
   const rootPrivKey: string = rootKeyData.privateKey;
 
+  // Slice 3: /api/pool/summary now requires a session. Mint an operator
+  // cookie locally; same JWT shape a real magic-link login produces.
+  const COOKIE = await operatorCookieHeader(prisma);
+
   // --- Capture before-state ---
-  const before = await getPoolState();
+  const before = await getPoolState(COOKIE);
   console.log("Before state:");
   console.log(`  Obligation balance: ${before.obligationBalance.toString()} nanoCredits`);
   console.log(`  Active delegations: ${before.activeDelegations}`);
@@ -142,7 +150,7 @@ async function main() {
     spendCap: "5.0",
     expiresAt,
     authSignature: delegationSig,
-  });
+  }, { Cookie: COOKIE });
 
   if (createStatus === 201 && createData.delegationId && createData.agentIdentityId === AGENT_ID) {
     pass("Agent-bound delegation created (v2 format)");
@@ -153,7 +161,7 @@ async function main() {
   const delegationId = createData.delegationId;
 
   // Verify delegation count incremented
-  const afterCreate = await getPoolState();
+  const afterCreate = await getPoolState(COOKIE);
   if (afterCreate.activeDelegations === before.activeDelegations + 1) {
     pass(`Active delegations: ${before.activeDelegations} → ${afterCreate.activeDelegations}`);
   } else {
@@ -177,7 +185,7 @@ async function main() {
     pass("Proxy returned pendingSignature with canonicalMessage");
   } else {
     fail("Proxy call", proxyData.error || `status ${proxyStatus}`);
-    await del(`${BASE}/api/delegations`, { id: delegationId });
+    await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
     process.exit(1);
   }
 
@@ -193,14 +201,15 @@ async function main() {
 
   const { status: signStatus, data: signData } = await post(
     `${BASE}/api/obligations/${obligationId}/sign`,
-    { signature: sessionSig, updateId, delegationId: returnedDelegationId }
+    { signature: sessionSig, updateId, delegationId: returnedDelegationId },
+    { Cookie: COOKIE }
   );
 
   if (signStatus === 200 && signData.verified === true && signData.delegated === true) {
     pass("Committed: verified=true, delegated=true");
   } else {
     fail("Sign commitment", signData.error || `verified=${signData.verified} delegated=${signData.delegated}`);
-    await del(`${BASE}/api/delegations`, { id: delegationId });
+    await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
     await prisma.$disconnect();
     process.exit(1);
   }
@@ -224,7 +233,7 @@ async function main() {
   // --- Step 4: Assert exact deltas ---
   console.log("\nStep 4: Verify exact deltas");
 
-  const after = await getPoolState();
+  const after = await getPoolState(COOKIE);
   const testDelegation = after.findDelegation(delegationId);
 
   // Delegation spentSoFar should be exactly TOOL_COST (fresh delegation, one call)
@@ -251,9 +260,9 @@ async function main() {
   }
 
   // --- Cleanup: revoke test delegation ---
-  await del(`${BASE}/api/delegations`, { id: delegationId });
+  await del(`${BASE}/api/delegations`, { id: delegationId }, { Cookie: COOKIE });
   await prisma.$disconnect();
-  const afterCleanup = await getPoolState();
+  const afterCleanup = await getPoolState(COOKIE);
 
   console.log("\nAfter state (test delegation revoked):");
   console.log(`  Obligation balance: ${afterCleanup.obligationBalance.toString()} nanoCredits`);

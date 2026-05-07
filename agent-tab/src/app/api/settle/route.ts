@@ -3,16 +3,37 @@ import { parseCredits } from "@/lib/credits";
 import { tracker, TrackerError } from "@/lib/tracker/service";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
+import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
 /**
  * Settlement — app-layer action that uses tracker for note update.
  */
 export async function POST(req: NextRequest) {
+  let user;
+  try {
+    user = await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const { providerId, customerId, amount, method } = body;
 
   if (!providerId || !customerId || !amount) {
     return NextResponse.json({ error: "Missing providerId, customerId, or amount" }, { status: 400 });
+  }
+
+  // Inline ownership: operator bypass; customer-role missing/foreign customerId
+  // collapses to 403 with the same body so customer-role users cannot enumerate
+  // customer ids via differential responses.
+  if (user.role !== "operator") {
+    const ownedIds = await ownedCustomerIds(user);
+    if (!ownedIds || !ownedIds.includes(customerId)) {
+      return NextResponse.json(
+        { error: "customer not owned by current user" },
+        { status: 403 }
+      );
+    }
   }
 
   const parsedAmount = parseCredits(String(amount));

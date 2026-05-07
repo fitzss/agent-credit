@@ -24,6 +24,7 @@
 import { PrismaClient } from "@prisma/client";
 import { generateKeypair, signMessage } from "../src/lib/crypto";
 import { buildDelegationMessage } from "../src/lib/tracker/delegation";
+import { hashAgentApiKey, previewAgentApiKey } from "../src/lib/agent-key-hash";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -164,7 +165,8 @@ async function seed() {
       id: IDS.agent1,
       customerId: customer.id,
       label: "auto-researcher",
-      apiKey: "auth-demo-key-001",
+      apiKeyHash: hashAgentApiKey("auth-demo-key-001"),
+      apiKeyPreview: previewAgentApiKey("auth-demo-key-001"),
     },
   });
   await prisma.agentIdentity.create({
@@ -172,7 +174,8 @@ async function seed() {
       id: IDS.agent2,
       customerId: customer.id,
       label: "ops-monitor",
-      apiKey: "auth-demo-key-002",
+      apiKeyHash: hashAgentApiKey("auth-demo-key-002"),
+      apiKeyPreview: previewAgentApiKey("auth-demo-key-002"),
     },
   });
   console.log(`Created agents: auto-researcher (key-001), ops-monitor (key-002)`);

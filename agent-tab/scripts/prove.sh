@@ -36,16 +36,29 @@ if ! curl -s --max-time 5 "$SIDECAR/health" | grep -q '"ok"' 2>/dev/null; then
 fi
 echo "  ✓ Sidecar healthy"
 
-if ! curl -s --max-time 5 "$AGENT/api/reserves" | grep -q '"id"' 2>/dev/null; then
+# Mint operator cookie for the GET /api/reserves health check (slice 10b
+# session-gates this route). Fail loudly if minting fails; never silently
+# continue with an unauthenticated probe.
+COOKIE=$(npx tsx scripts/lib/test-session.ts --print-cookie 2>&1)
+COOKIE_EXIT=$?
+if [ $COOKIE_EXIT -ne 0 ] || [ -z "$COOKIE" ] || [[ "$COOKIE" != next-auth.session-token=* ]]; then
+  echo "  ✗ Failed to mint operator cookie for prove.sh health check"
+  echo "    helper output: $COOKIE"
+  echo "    Hints: confirm NEXTAUTH_SECRET is exported, the dev DB is reachable,"
+  echo "    and the default operator user exists (run npm run backfill:operator)."
+  exit 1
+fi
+
+if ! curl -s --max-time 5 -H "Cookie: $COOKIE" "$AGENT/api/reserves" | grep -q '"id"' 2>/dev/null; then
   echo "  ✗ Agent Tab not responding at $AGENT"
   echo "  Start it first. Aborting."
   exit 1
 fi
 echo "  ✓ Agent Tab responding"
 
-# Detect authority-demo fixture
+# Detect authority-demo fixture (DB-direct; /api/pool/summary now requires a session)
 AUTHORITY_PRESENT=false
-if curl -s --max-time 5 "$AGENT/api/pool/summary" | grep -q "auth-demo" 2>/dev/null; then
+if npx tsx scripts/lib/check-auth-demo-fixture.ts >/dev/null 2>&1; then
   AUTHORITY_PRESENT=true
   echo "  ✓ Authority demo fixture detected"
 else

@@ -1,9 +1,33 @@
 import { prisma } from "@/lib/prisma";
 import { generateKeypair, buildCanonicalMessage, signMessage } from "@/lib/crypto";
 import { buildDelegationMessageV1 } from "@/lib/tracker/delegation";
+import { hashAgentApiKey, previewAgentApiKey } from "@/lib/agent-key-hash";
 import { NextRequest, NextResponse } from "next/server";
+import { requireOperator, authErrorResponse } from "@/lib/auth";
+
+// Fixture raw API keys. Used at create time to compute hash + preview, and
+// returned in the 200 response body so the demo flow can wire agents. These
+// constants are the single source of truth — the raw values are never read
+// from the DB after slice 8B-2 (the apiKey column no longer exists).
+const AGENT_KEY_INCIDENT_RESPONDER = "agent-key-demo-001";
+const AGENT_KEY_RESEARCH_ASSISTANT = "agent-key-demo-002";
+const AGENT_KEY_AUTO_RESEARCHER = "agent-key-demo-003";
 
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "seed disabled in production" },
+      { status: 403 },
+    );
+  }
+
+  let operator;
+  try {
+    operator = await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const baseUrl = new URL(req.url).origin;
 
   // Clean existing data (order matters for foreign keys)
@@ -76,6 +100,7 @@ export async function POST(req: NextRequest) {
       publicKey: custKeys.publicKey,
       privateKey: custKeys.privateKey,
       contactEmail: "team@acme.dev",
+      ownerUserId: operator.id,
     },
   });
 
@@ -84,7 +109,8 @@ export async function POST(req: NextRequest) {
     data: {
       customerId: customer.id,
       label: "incident-responder",
-      apiKey: "agent-key-demo-001",
+      apiKeyHash: hashAgentApiKey(AGENT_KEY_INCIDENT_RESPONDER),
+      apiKeyPreview: previewAgentApiKey(AGENT_KEY_INCIDENT_RESPONDER),
     },
   });
 
@@ -92,7 +118,8 @@ export async function POST(req: NextRequest) {
     data: {
       customerId: customer.id,
       label: "research-assistant",
-      apiKey: "agent-key-demo-002",
+      apiKeyHash: hashAgentApiKey(AGENT_KEY_RESEARCH_ASSISTANT),
+      apiKeyPreview: previewAgentApiKey(AGENT_KEY_RESEARCH_ASSISTANT),
     },
   });
 
@@ -237,6 +264,7 @@ export async function POST(req: NextRequest) {
       privateKey: "", // empty — self-custody
       signingMode: "self-custody",
       contactEmail: "ops@boltlabs.io",
+      ownerUserId: operator.id,
     },
   });
 
@@ -244,7 +272,8 @@ export async function POST(req: NextRequest) {
     data: {
       customerId: customer2.id,
       label: "auto-researcher",
-      apiKey: "agent-key-demo-003",
+      apiKeyHash: hashAgentApiKey(AGENT_KEY_AUTO_RESEARCHER),
+      apiKeyPreview: previewAgentApiKey(AGENT_KEY_AUTO_RESEARCHER),
     },
   });
 
@@ -311,9 +340,9 @@ export async function POST(req: NextRequest) {
       },
     ],
     agents: [
-      { id: agent1.id, apiKey: agent1.apiKey, label: "incident-responder" },
-      { id: agent2.id, apiKey: agent2.apiKey, label: "research-assistant" },
-      { id: agent3.id, apiKey: agent3.apiKey, label: "auto-researcher" },
+      { id: agent1.id, apiKey: AGENT_KEY_INCIDENT_RESPONDER, label: "incident-responder" },
+      { id: agent2.id, apiKey: AGENT_KEY_RESEARCH_ASSISTANT, label: "research-assistant" },
+      { id: agent3.id, apiKey: AGENT_KEY_AUTO_RESEARCHER, label: "auto-researcher" },
     ],
     tools: {
       analyze: analyzeTool.id,

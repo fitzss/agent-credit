@@ -1,18 +1,36 @@
 import { prisma } from "@/lib/prisma";
 import { generateKeypair } from "@/lib/crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { toJsonSafe } from "@/lib/json-safe";
+import { requireOperator, requireSession, authErrorResponse } from "@/lib/auth";
 
 export async function GET() {
+  try {
+    await requireSession();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const providers = await prisma.provider.findMany({
-    include: { tools: true, creditLines: { include: { customer: true } }, obligationStates: true },
+    include: {
+      tools: true,
+      creditLines: { include: { customer: { select: { id: true, name: true } } } },
+      obligationStates: true,
+    },
     orderBy: { createdAt: "desc" },
   });
   // Strip private keys from response
   const safe = providers.map(({ privateKey: _, ...p }) => p);
-  return NextResponse.json(safe);
+  return NextResponse.json(toJsonSafe(safe));
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    await requireOperator();
+  } catch (e) {
+    return authErrorResponse(e);
+  }
+
   const body = await req.json();
   const keypair = generateKeypair();
   const provider = await prisma.provider.create({
@@ -25,5 +43,5 @@ export async function POST(req: NextRequest) {
     },
   });
   const { privateKey: _, ...safe } = provider;
-  return NextResponse.json(safe, { status: 201 });
+  return NextResponse.json(toJsonSafe(safe), { status: 201 });
 }

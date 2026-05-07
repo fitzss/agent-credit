@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { tracker, TrackerError } from "@/lib/tracker/service";
+import { hashAgentApiKey } from "@/lib/agent-key-hash";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 
@@ -18,8 +19,9 @@ export async function POST(req: NextRequest) {
   }
 
   // --- App layer: authenticate ---
+  const apiKeyHash = hashAgentApiKey(apiKey);
   const agent = await prisma.agentIdentity.findUnique({
-    where: { apiKey },
+    where: { apiKeyHash },
     include: { customer: true },
   });
   if (!agent || agent.status !== "active") {
