@@ -223,6 +223,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
     prisma.settlementEvent.create({
       data: {
         obligationStateId: obligationId,
+        reserveId,
         amount: grossRedeemNanoCredits,
         method: "on-chain-redemption",
         status: "completed",
@@ -273,7 +274,7 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
  * All redemption paths must use it to avoid silent regression of cumulative semantics.
  */
 export async function computeCumulativeTrackerDebt(
-  customerId: string,
+  reserveId: string,
   debtorPubKey: string,
   creditorPubKey: string,
   currentObligationNanoErg: bigint
@@ -282,7 +283,7 @@ export async function computeCumulativeTrackerDebt(
     where: {
       method: "on-chain-redemption",
       status: "completed",
-      obligationState: { customerId },
+      reserveId,
     },
     include: { obligationState: true },
   });
@@ -308,12 +309,12 @@ export async function computeCumulativeTrackerDebt(
  * ONE cumulative value per pair, not individual settlement amounts. Multiple
  * settlements for the same pair must be summed into a single entry.
  */
-export async function gatherExistingReserveEntries(customerId: string) {
+export async function gatherExistingReserveEntries(reserveId: string) {
   const priorSettlements = await prisma.settlementEvent.findMany({
     where: {
       method: "on-chain-redemption",
       status: "completed",
-      obligationState: { customerId },
+      reserveId,
     },
     include: { obligationState: true },
   });

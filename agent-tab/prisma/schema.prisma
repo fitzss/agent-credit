@@ -181,6 +181,7 @@ model Reserve {
 
   customer            Customer      @relation(fields: [customerId], references: [id])
   pendingRedemptions  PendingRedemption[]
+  settlementEvents    SettlementEvent[]
 }
 
 model UsageEvent {
@@ -203,6 +204,7 @@ model UsageEvent {
 model SettlementEvent {
   id                  String        @id @default(uuid())
   obligationStateId   String
+  reserveId           String?       // on-chain reserve scoping (NULL for manual settlements)
   amount              BigInt        // nanoCredits
   method              String        @default("manual")
   status              String        @default("completed")
@@ -210,6 +212,9 @@ model SettlementEvent {
   timestamp           DateTime      @default(now())
 
   obligationState     ObligationState @relation(fields: [obligationStateId], references: [id])
+  reserve             Reserve?      @relation(fields: [reserveId], references: [id])
+
+  @@index([reserveId])
 }
 
 // Tracks on-chain redemption txs that were submitted but not yet confirmed/reconciled.

@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
   // --- Step 2: Contract version guardrail ---
   // v1 reserves (insert-only) only support one redemption per (owner, receiver) pair.
   // v2 reserves (insert+update) support repeated same-pair redemption.
-  const existingReserveEntries = await gatherExistingReserveEntries(reserve.customerId);
+  const existingReserveEntries = await gatherExistingReserveEntries(reserve.id);
   const hasPriorRedemptionForThisPair = existingReserveEntries.some(
     (e) => e.ownerPubKeyHex === obligation.debtorPubKey &&
            e.receiverPubKeyHex === obligation.creditorPubKey
@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
 
   // Cumulative tracker debt: single source of truth via helper
   const { totalDebtNanoErg, previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(
-    reserve.customerId,
+    reserve.id,
     obligation.debtorPubKey,
     obligation.creditorPubKey,
     redeemAmountNanoErg

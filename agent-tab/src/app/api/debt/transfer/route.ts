@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { parseCredits, nanoCreditsToNanoErg } from "@/lib/credits";
-import { computeCumulativeTrackerDebt } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
@@ -135,15 +134,29 @@ export async function POST(req: NextRequest) {
   }
 
   // --- Guardrail 5: Redeemed-floor constraint ---
+  // Pair-scoped across reserves: a debt transfer must not bring the source
+  // below what's already been redeemed for the (debtor, creditor) pair on
+  // any reserve. computeCumulativeTrackerDebt is now reserve-scoped (slice
+  // 13d), but transfers operate above the reserve layer — there's no single
+  // reserve to scope against here, so we sum across the customer's pair.
   const amountNanoErg = nanoCreditsToNanoErg(amountNanoCredits);
   const newSourceAmount = fromOb.currentAmount - amountNanoCredits;
   const newSourceAmountNanoErg = nanoCreditsToNanoErg(newSourceAmount);
 
-  const { previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(
-    fromOb.customerId,
-    fromOb.debtorPubKey,
-    fromOb.creditorPubKey,
-    newSourceAmountNanoErg, // hypothetical post-transfer amount
+  const priorPairSettlements = await prisma.settlementEvent.findMany({
+    where: {
+      method: "on-chain-redemption",
+      status: "completed",
+      obligationState: {
+        customerId: fromOb.customerId,
+        debtorPubKey: fromOb.debtorPubKey,
+        creditorPubKey: fromOb.creditorPubKey,
+      },
+    },
+  });
+  const previouslyRedeemedNanoErg = priorPairSettlements.reduce(
+    (sum, s) => sum + nanoCreditsToNanoErg(s.amount),
+    BigInt(0),
   );
 
   // Post-transfer totalDebt for source pair

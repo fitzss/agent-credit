@@ -40,15 +40,17 @@ async function main(){
   const allActive = await p.reserve.findMany({where:{lifecycle:'active',valueNanoErg:{gt:0}},orderBy:{updatedAt:'desc'}});
   let v2 = null;
   for(const r of allActive){
-    const sc = await p.settlementEvent.count({where:{obligationState:{customerId:r.customerId},method:'on-chain-redemption'}});
+    const sc = await p.settlementEvent.count({where:{reserveId:r.id,method:'on-chain-redemption'}});
     if(sc > 0){ v2 = r; break; }
   }
   if(!v2) v2 = allActive[0]; // fallback to most recent
-  // Find v1 reserve that has prior settlements (for repeat-block test)
-  const v1s = await p.reserve.findMany({where:{contractVersion:'v1'}});
+  // Find v1 reserve that has prior settlements (for repeat-block test).
+  // Exclude V2_RESERVE so V1 != V2 — scenario 13 PATCHes V1, which would
+  // otherwise overwrite scenario 9's contractVersion restore on V2.
+  const v1s = await p.reserve.findMany({where:{contractVersion:'v1', id:{not: v2?.id ?? ''}}});
   let v1 = null;
   for(const r of v1s){
-    const s = await p.settlementEvent.count({where:{obligationState:{customerId:r.customerId},method:'on-chain-redemption'}});
+    const s = await p.settlementEvent.count({where:{reserveId:r.id,method:'on-chain-redemption'}});
     if(s > 0){ v1 = r; break; }
   }
   if(!v1) v1 = v1s[0]; // fallback

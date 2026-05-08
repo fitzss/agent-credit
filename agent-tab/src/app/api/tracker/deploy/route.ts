@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   // Compute the correct cumulative totalDebt (v1: nanoCredits = nanoERG)
   const redeemAmountNanoErg = nanoCreditsToNanoErg(obligation.currentAmount);
   const { totalDebtNanoErg } = await computeCumulativeTrackerDebt(
-    reserve.customerId,
+    reserve.id,
     obligation.debtorPubKey,
     obligation.creditorPubKey,
     redeemAmountNanoErg,

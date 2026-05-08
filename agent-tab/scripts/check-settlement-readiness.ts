@@ -297,8 +297,9 @@ async function main() {
       ) ?? null
     : null;
 
-  // Prior on-chain settlements for this (debtor, creditor) pair.
-  // Mirrors src/lib/reconcile.ts:computeCumulativeTrackerDebt.
+  // Prior on-chain settlements for this (reserve, debtor, creditor) tuple.
+  // Mirrors src/lib/reconcile.ts:computeCumulativeTrackerDebt — scoped by
+  // reserveId to match the per-reserve R5 AVL semantics (slice 13d).
   let priorRedeemedNanoErg = BigInt(0);
   let priorSettlementsCount = 0;
   if (obligation) {
@@ -306,8 +307,8 @@ async function main() {
       where: {
         method: "on-chain-redemption",
         status: "completed",
+        reserveId: args.reserveId,
         obligationState: {
-          customerId: obligation.customerId,
           debtorPubKey: obligation.debtorPubKey,
           creditorPubKey: obligation.creditorPubKey,
         },
