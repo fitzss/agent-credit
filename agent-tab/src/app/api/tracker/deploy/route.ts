@@ -4,9 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireOperator, authErrorResponse } from "@/lib/auth";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
-
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
-const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
+import { SIDECAR_URL, ERGO_NODE_API_KEY } from "@/lib/env";
 
 /**
  * POST /api/tracker/deploy

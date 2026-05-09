@@ -2,8 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { reconcileRedemption } from "@/lib/reconcile";
 import { NextRequest, NextResponse } from "next/server";
 import { requireOperator, authErrorResponse } from "@/lib/auth";
-
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
+import { ERGO_NODE_URL } from "@/lib/env";
 
 /**
  * POST /api/reserves/recover-pending
@@ -31,7 +30,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ message: "No pending redemptions", recovered: [] });
   }
 
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   const results: any[] = [];
 
   for (const p of pending) {
@@ -46,7 +44,7 @@ export async function POST(req: NextRequest) {
     // Confirmed on-chain?
     let confirmed = false;
     try {
-      const res = await fetch(`${nodeUrl}/blockchain/transaction/byId/${p.txId}`);
+      const res = await fetch(`${ERGO_NODE_URL}/blockchain/transaction/byId/${p.txId}`);
       const data = await res.json();
       confirmed = !!(data.inputs && !data.error);
     } catch { /* not yet */ }

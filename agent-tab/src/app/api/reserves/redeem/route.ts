@@ -5,9 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
-
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
-const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
+import { SIDECAR_URL, ERGO_NODE_URL, ERGO_NODE_API_KEY } from "@/lib/env";
 
 /**
  * POST /api/reserves/redeem
@@ -230,12 +228,11 @@ export async function POST(req: NextRequest) {
   const netPayoutNanoErg = BigInt(redeemResult.payoutNanoErg || 0);
 
   // --- Step 5: Poll for confirmation ---
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   let confirmed = false;
   for (let i = 0; i < REDEEM_POLL_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, REDEEM_POLL_INTERVAL_MS));
     try {
-      const checkRes = await fetch(`${nodeUrl}/blockchain/transaction/byId/${txId}`);
+      const checkRes = await fetch(`${ERGO_NODE_URL}/blockchain/transaction/byId/${txId}`);
       const checkData = await checkRes.json();
       if (checkData.inputs && !checkData.error) { confirmed = true; break; }
     } catch { /* retry */ }
@@ -312,7 +309,6 @@ async function recoverPending(reserveId: string): Promise<RecoveryResult[]> {
 
   if (pending.length === 0) return [];
 
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   const results: RecoveryResult[] = [];
 
   for (const p of pending) {
@@ -332,7 +328,7 @@ async function recoverPending(reserveId: string): Promise<RecoveryResult[]> {
     // Check if tx is confirmed on-chain
     let txConfirmed = false;
     try {
-      const checkRes = await fetch(`${nodeUrl}/blockchain/transaction/byId/${p.txId}`);
+      const checkRes = await fetch(`${ERGO_NODE_URL}/blockchain/transaction/byId/${p.txId}`);
       const checkData = await checkRes.json();
       txConfirmed = !!(checkData.inputs && !checkData.error);
     } catch { /* not confirmed */ }

@@ -3,7 +3,7 @@
  * Handles all Ergo-specific operations: reserve deployment, scanning, status.
  */
 
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
+import { SIDECAR_URL } from "@/lib/env";
 
 export interface SidecarHealth {
   status: string;

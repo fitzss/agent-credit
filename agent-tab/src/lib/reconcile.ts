@@ -5,8 +5,7 @@ import * as path from "path";
 import * as os from "os";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
-
-const SIDECAR_URL = process.env.SIDECAR_URL || "http://localhost:8081";
+import { SIDECAR_URL, ERGO_NODE_URL, ERGO_NODE_API_KEY } from "@/lib/env";
 
 // Confirmation polling config — set DEMO_MODE=true for longer windows
 const DEMO_MODE = process.env.DEMO_MODE === "true";
@@ -150,10 +149,9 @@ export async function reconcileRedemption(input: ReconcileInput): Promise<Reconc
   }
 
   // --- Guardrail 4: Verify tx on-chain ---
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   let txData: any;
   try {
-    const txRes = await fetch(`${nodeUrl}/blockchain/transaction/byId/${redemptionTxId}`);
+    const txRes = await fetch(`${ERGO_NODE_URL}/blockchain/transaction/byId/${redemptionTxId}`);
     txData = await txRes.json();
     if (txData.error || !txData.inputs) {
       throw new ReconcileError("Redemption tx not found on-chain", 404, { redemptionTxId });
@@ -459,8 +457,6 @@ export async function validateTrackerAlignment(
   return { trackerBoxId: entry.trackerBoxId };
 }
 
-const ERGO_NODE_API_KEY = process.env.ERGO_NODE_API_KEY || "hello";
-
 /**
  * Deploy/update a tracker box via the sidecar with all entries (multi-pair support).
  * Builds the full desired entry set: existing entries from current TrackerBox + new/updated pair.
@@ -535,12 +531,11 @@ export async function deployAndRecordTracker(params: {
   });
 
   // Wait for on-chain confirmation (tracker must be confirmed before redemption tx can reference it)
-  const nodeUrl = SIDECAR_URL.replace(/:\d+$/, ":9052");
   let confirmed = false;
   for (let i = 0; i < TRACKER_POLL_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, TRACKER_POLL_INTERVAL_MS));
     try {
-      const checkRes = await fetch(`${nodeUrl}/blockchain/box/byId/${result.trackerBoxId}`);
+      const checkRes = await fetch(`${ERGO_NODE_URL}/blockchain/box/byId/${result.trackerBoxId}`);
       const checkData = await checkRes.json();
       if (checkData.boxId && !checkData.error) { confirmed = true; break; }
     } catch { /* retry */ }
