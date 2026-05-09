@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "stateDir": "~/.agent-tab-spike",
+  "upstream": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-everything"],
+    "env": {}
+  },
+  "tools": [
+    {
+      "id": "everything-echo",
+      "upstreamName": "echo",
+      "exposedName": "budgeted_echo",
+      "costPerCall": "1000000000"
+    }
+  ],
+  "tabs": [
+    {
+      "id": "tab-default",
+      "scope": "*",
+      "limitAmount": "1000000000"
+    }
+  ]
+}
