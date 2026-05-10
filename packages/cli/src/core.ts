@@ -117,6 +117,8 @@ export function errorReceipt(d: AllowedDecision, message: string) {
   };
 }
 
+export type Alert = null | "threshold_warning" | "limit_reached";
+
 export interface StatusReport {
   tabId: string;
   limit: string;
@@ -124,7 +126,11 @@ export interface StatusReport {
   pending: string;
   remaining: string;
   utilization: string;
+  alert: Alert;
 }
+
+// Mirrors hosted CreditLine.alertThreshold default (0.8).
+const ALERT_THRESHOLD = 0.8;
 
 export function statusReport(config: Config, balances: BalancesFile): StatusReport[] {
   return config.tabs.map((tab) => {
@@ -133,10 +139,11 @@ export function statusReport(config: Config, balances: BalancesFile): StatusRepo
     const pend = BigInt(tb.pendingAmount);
     const lim = BigInt(tab.limitAmount);
     const remaining = lim - cur - pend;
-    // utilization as a string; integer percent + 2 decimals
-    const utilPct = lim > 0n
-      ? Number((cur + pend) * 10000n / lim) / 100
-      : 0;
+    const utilPct = lim > 0n ? Number((cur + pend) * 10000n / lim) / 100 : 0;
+    const alert: Alert =
+      utilPct >= 100 ? "limit_reached"
+      : utilPct >= ALERT_THRESHOLD * 100 ? "threshold_warning"
+      : null;
     return {
       tabId: tab.id,
       limit: lim.toString(),
@@ -144,6 +151,119 @@ export function statusReport(config: Config, balances: BalancesFile): StatusRepo
       pending: pend.toString(),
       remaining: remaining < 0n ? "0" : remaining.toString(),
       utilization: utilPct.toFixed(2),
+      alert,
     };
   });
+}
+
+// ===== Authority helpers =====
+
+export function isPositiveIntString(s: unknown): s is string {
+  return typeof s === "string" && /^[1-9]\d*$/.test(s);
+}
+
+export interface RequestInput {
+  tabId?: string;
+  requestedLimit?: string;
+  requestedDelta?: string;
+  reason?: string;
+}
+
+export interface ValidatedRequest {
+  tab: TabEntry;
+  requestedLimit?: string;
+  requestedDelta?: string;
+  reason: string;
+}
+
+// Strict validation per slice 14m.0b plan.
+// Throws Error with a clear message on any violation.
+export function validateRequestInput(config: Config, input: RequestInput): ValidatedRequest {
+  const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+  if (reason.length === 0) {
+    throw new Error("request rejected: reason is required and must be non-empty");
+  }
+  const hasLimit = input.requestedLimit !== undefined && input.requestedLimit !== null;
+  const hasDelta = input.requestedDelta !== undefined && input.requestedDelta !== null;
+  if (hasLimit && hasDelta) {
+    throw new Error(
+      "request rejected: supply exactly one of requestedLimit or requestedDelta, not both",
+    );
+  }
+  if (!hasLimit && !hasDelta) {
+    throw new Error(
+      "request rejected: supply exactly one of requestedLimit or requestedDelta",
+    );
+  }
+  if (hasLimit && !isPositiveIntString(input.requestedLimit)) {
+    throw new Error(
+      `request rejected: requestedLimit must be a positive integer decimal string`,
+    );
+  }
+  if (hasDelta && !isPositiveIntString(input.requestedDelta)) {
+    throw new Error(
+      `request rejected: requestedDelta must be a positive integer decimal string`,
+    );
+  }
+  let tab: TabEntry | undefined;
+  if (input.tabId !== undefined && input.tabId !== null && input.tabId !== "") {
+    tab = config.tabs.find((t) => t.id === input.tabId);
+    if (!tab) {
+      throw new Error(`request rejected: unknown tabId ${JSON.stringify(input.tabId)}`);
+    }
+  } else {
+    tab = config.defaultTabId
+      ? config.tabs.find((t) => t.id === config.defaultTabId)
+      : undefined;
+    if (!tab) tab = config.tabs[0];
+  }
+  return {
+    tab,
+    requestedLimit: hasLimit ? input.requestedLimit : undefined,
+    requestedDelta: hasDelta ? input.requestedDelta : undefined,
+    reason,
+  };
+}
+
+// Refuse to set a limit lower than (currentAmount + pendingAmount).
+export function validateNewLimit(
+  newLimit: bigint,
+  current: bigint,
+  pending: bigint,
+): void {
+  if (newLimit < current + pending) {
+    throw new Error(
+      `would lower limit below current+pending (current=${current} pending=${pending} newLimit=${newLimit})`,
+    );
+  }
+}
+
+export interface GrantApplication {
+  previousLimit: bigint;
+  newLimit: bigint;
+  delta: bigint;
+}
+
+// Compute the new limit from a grant request shape.
+export function applyGrant(
+  previousLimit: bigint,
+  shape: { requestedLimit?: string; requestedDelta?: string; addAmount?: bigint; setLimitAmount?: bigint },
+): GrantApplication {
+  let newLimit: bigint;
+  if (shape.requestedLimit !== undefined) {
+    newLimit = BigInt(shape.requestedLimit);
+  } else if (shape.requestedDelta !== undefined) {
+    newLimit = previousLimit + BigInt(shape.requestedDelta);
+  } else if (shape.setLimitAmount !== undefined) {
+    newLimit = shape.setLimitAmount;
+  } else if (shape.addAmount !== undefined) {
+    newLimit = previousLimit + shape.addAmount;
+  } else {
+    throw new Error("applyGrant: no grant amount supplied");
+  }
+  return {
+    previousLimit,
+    newLimit,
+    delta: newLimit - previousLimit,
+  };
 }

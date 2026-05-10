@@ -5,6 +5,7 @@ import { loadConfig, type Config } from "../config.js";
 import { Upstream } from "../upstream.js";
 import {
   appendReceipt,
+  appendRequest,
   ensureStateDir,
   readBalances,
   writeBalances,
@@ -16,6 +17,8 @@ import {
   evaluate,
   statusReport,
   successReceipt,
+  validateRequestInput,
+  type RequestInput,
 } from "../core.js";
 
 function log(...args: unknown[]): void {
@@ -58,49 +61,74 @@ function jsonSchemaToZodShape(schema: unknown): ZodRawShape {
   return shape;
 }
 
+// Reads config.json from disk every call. Used by cap checks and status
+// to support the no-restart earned-autonomy loop. Throws are caught at
+// the call sites so a transient parse failure produces an MCP isError
+// result instead of a process crash.
+async function readFreshConfig(configPath: string): Promise<Config> {
+  return await loadConfig(configPath);
+}
+
 export async function runProxy(opts: ProxyOptions): Promise<void> {
-  const config: Config = await loadConfig(opts.configPath);
-  await ensureStateDir(config.stateDir);
+  const startupConfig: Config = await loadConfig(opts.configPath);
+  await ensureStateDir(startupConfig.stateDir);
 
   log(`config loaded from ${opts.configPath}`);
-  log(`state dir: ${config.stateDir}`);
-  log(`upstream: ${config.upstream.command} ${config.upstream.args.join(" ")}`);
+  log(`state dir: ${startupConfig.stateDir}`);
+  log(`upstream: ${startupConfig.upstream.command} ${startupConfig.upstream.args.join(" ")}`);
 
   const upstream = new Upstream();
-  await upstream.connect(config);
+  await upstream.connect(startupConfig);
   log("upstream connected");
 
-  const tools = await upstream.listTools();
-  log(`upstream advertises ${tools.length} tools`);
+  const upstreamTools = await upstream.listTools();
+  log(`upstream advertises ${upstreamTools.length} tools`);
 
-  // Resolve each configured tool's schema by name.
-  const wrapped = config.tools.map((tc) => {
-    const u = tools.find((t) => t.name === tc.upstreamName);
-    if (!u) {
-      throw new Error(
-        `Configured upstream tool ${tc.upstreamName} not found in upstream tools/list. ` +
-          `Available: ${tools.map((t) => t.name).join(", ")}`,
-      );
-    }
+  // Preflight: every configured upstreamName must exist in upstream tools/list.
+  const missing = startupConfig.tools.filter(
+    (tc) => !upstreamTools.some((u) => u.name === tc.upstreamName),
+  );
+  if (missing.length > 0) {
+    const found = upstreamTools.map((t) => t.name).join(", ");
+    const want = missing.map((m) => m.upstreamName).join(", ");
+    log(
+      `preflight FAILED: configured upstream tool(s) not found: ${want}. ` +
+        `Upstream advertises: ${found}`,
+    );
+    process.exit(2);
+  }
+
+  // Cache upstream schemas at startup; tool registrations don't change at runtime.
+  const wrapped = startupConfig.tools.map((tc) => {
+    const u = upstreamTools.find((t) => t.name === tc.upstreamName)!;
     return { ...tc, upstreamSchema: u.inputSchema, description: u.description };
   });
 
   const server = new McpServer({
     name: "@agent-tab/cli proxy",
-    version: "0.0.1",
+    version: "0.0.2",
   });
 
-  // Built-in: agent_tab_status
+  // Built-in: agent_tab_status — uses fresh config (limit may have changed).
   server.registerTool(
     "agent_tab_status",
     {
       description:
-        "Returns the current Agent Tab budget status: limit, current, pending, remaining, utilization for each tab.",
+        "Returns the current Agent Tab budget status: limit, current, pending, remaining, utilization, alert for each tab.",
       inputSchema: {},
     },
     async () => {
-      const balances = await readBalances(config.stateDir);
-      const report = statusReport(config, balances);
+      let cfg: Config;
+      try {
+        cfg = await readFreshConfig(opts.configPath);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `agent_tab_status: config read failed: ${(e as Error).message}` }],
+          isError: true,
+        };
+      }
+      const balances = await readBalances(cfg.stateDir);
+      const report = statusReport(cfg, balances);
       return {
         content: [
           {
@@ -109,7 +137,7 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
               .map(
                 (r) =>
                   `tab=${r.tabId} limit=${r.limit} current=${r.current} pending=${r.pending} ` +
-                  `remaining=${r.remaining} utilization=${r.utilization}%`,
+                  `remaining=${r.remaining} utilization=${r.utilization}% alert=${r.alert ?? "none"}`,
               )
               .join("\n"),
           },
@@ -118,7 +146,64 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
     },
   );
 
-  // Wrapped upstream tools.
+  // Built-in: agent_tab_request_more_authority — strict validation, append to requests.jsonl,
+  // never auto-approve, never mutate config or balances.
+  server.registerTool(
+    "agent_tab_request_more_authority",
+    {
+      description:
+        "Submit a request for more authority on a tab. Human approval is required: the operator must run " +
+        "`agent-tab grant --request-id <id>` to approve. This call never auto-approves and never mutates state.",
+      inputSchema: {
+        tabId: z.string().optional().describe("tab to extend; default: defaultTabId or first tab"),
+        requestedLimit: z.string().optional().describe("absolute new limit, positive BigInt decimal string"),
+        requestedDelta: z.string().optional().describe("delta on top of current limit, positive BigInt decimal string"),
+        reason: z.string().describe("human-readable justification (required, non-empty)"),
+      },
+    },
+    async (args: RequestInput) => {
+      let cfg: Config;
+      try {
+        cfg = await readFreshConfig(opts.configPath);
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `request rejected: config read failed: ${(e as Error).message}` }],
+          isError: true,
+        };
+      }
+      let validated;
+      try {
+        validated = validateRequestInput(cfg, args);
+      } catch (e) {
+        log(`request rejected: ${(e as Error).message}`);
+        return {
+          content: [{ type: "text", text: (e as Error).message }],
+          isError: true,
+        };
+      }
+      const row = await appendRequest(cfg.stateDir, {
+        tabId: validated.tab.id,
+        currentLimit: validated.tab.limitAmount,
+        requestedLimit: validated.requestedLimit,
+        requestedDelta: validated.requestedDelta,
+        reason: validated.reason,
+      });
+      log(`request submitted id=${row.id} tab=${validated.tab.id}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Request submitted (id=${row.id}). Human approval is required. ` +
+              `The operator must run \`agent-tab grant --request-id ${row.id}\` to approve. ` +
+              `No state has been changed.`,
+          },
+        ],
+      };
+    },
+  );
+
+  // Wrapped upstream tools — cap check uses fresh config so grants take effect without restart.
   for (const tc of wrapped) {
     const shape = jsonSchemaToZodShape(tc.upstreamSchema);
     server.registerTool(
@@ -130,11 +215,36 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
         inputSchema: shape,
       },
       async (args: Record<string, unknown>) => {
-        // 1. Cap check.
-        const balances = await readBalances(config.stateDir);
-        const decision = evaluate(config, balances, tc.exposedName);
+        // 1. Re-read config from disk so grants take effect without proxy restart.
+        let cfg: Config;
+        try {
+          cfg = await readFreshConfig(opts.configPath);
+        } catch (e) {
+          log(`config read failed during ${tc.exposedName}: ${(e as Error).message}`);
+          return {
+            content: [
+              { type: "text", text: `Agent Tab error: config read failed: ${(e as Error).message}` },
+            ],
+            isError: true,
+          };
+        }
+
+        // 2. Cap check.
+        const balances = await readBalances(cfg.stateDir);
+        let decision;
+        try {
+          decision = evaluate(cfg, balances, tc.exposedName);
+        } catch (e) {
+          // Tool not in fresh config (e.g. removed). Surface as infrastructure failure.
+          return {
+            content: [
+              { type: "text", text: `Agent Tab error: ${(e as Error).message}` },
+            ],
+            isError: true,
+          };
+        }
         if (decision.decision === "denied") {
-          await appendReceipt(config.stateDir, deniedReceipt(decision));
+          await appendReceipt(cfg.stateDir, deniedReceipt(decision));
           log(
             `denied tab=${decision.tab.id} tool=${tc.exposedName} ` +
               `current=${decision.currentAmount} limit=${decision.limitAmount}`,
@@ -144,7 +254,7 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
               {
                 type: "text",
                 text:
-                  `Agent Tab denied this call: cap exceeded on tab ${decision.tab.id}. ` +
+                  `Agent Tab denied this call: Credit limit exceeded on tab ${decision.tab.id}. ` +
                   `current=${decision.currentAmount} pending=${decision.pendingAmount} ` +
                   `cost=${decision.cost} limit=${decision.limitAmount}. No state moved.`,
               },
@@ -152,15 +262,12 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
           };
         }
 
-        // 2. Forward to upstream.
+        // 3. Forward to upstream.
         let upstreamResult: unknown;
         try {
           upstreamResult = await upstream.callTool(tc.upstreamName, args);
         } catch (e) {
-          await appendReceipt(
-            config.stateDir,
-            errorReceipt(decision, (e as Error).message),
-          );
+          await appendReceipt(cfg.stateDir, errorReceipt(decision, (e as Error).message));
           log(`upstream error tool=${tc.upstreamName}: ${(e as Error).message}`);
           return {
             content: [
@@ -173,10 +280,10 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
           };
         }
 
-        // 3. Persist receipt + new balances.
+        // 4. Persist receipt + new balances.
         applyAllowed(balances, decision);
-        await writeBalances(config.stateDir, balances);
-        await appendReceipt(config.stateDir, successReceipt(decision));
+        await writeBalances(cfg.stateDir, balances);
+        await appendReceipt(cfg.stateDir, successReceipt(decision));
         log(
           `success tab=${decision.tab.id} tool=${tc.exposedName} ` +
             `prev=${decision.previousAmount} new=${decision.newAmount}`,
@@ -203,7 +310,10 @@ export async function runProxy(opts: ProxyOptions): Promise<void> {
     );
   }
 
-  log("registered tools: agent_tab_status, " + wrapped.map((w) => w.exposedName).join(", "));
+  log(
+    "registered tools: agent_tab_status, agent_tab_request_more_authority, " +
+      wrapped.map((w) => w.exposedName).join(", "),
+  );
 
   // Connect own server transport last, so tools/list is fully populated.
   const serverTransport = new StdioServerTransport();

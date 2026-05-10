@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "stateDir": "~/.agent-tab-spike",
+  "stateDir": "~/.agent-tab",
   "upstream": {
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-everything"],
@@ -12,13 +12,20 @@
       "upstreamName": "echo",
       "exposedName": "budgeted_echo",
       "costPerCall": "1000000000"
+    },
+    {
+      "id": "everything-get-sum",
+      "upstreamName": "get-sum",
+      "exposedName": "budgeted_get_sum",
+      "costPerCall": "1000000000"
     }
   ],
   "tabs": [
     {
       "id": "tab-default",
       "scope": "*",
-      "limitAmount": "1000000000"
+      "limitAmount": "10000000000"
     }
-  ]
+  ],
+  "defaultTabId": "tab-default"
 }

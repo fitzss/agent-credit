@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 
 const ToolEntry = z.object({
@@ -26,6 +27,7 @@ export const ConfigSchema = z.object({
   upstream: Upstream,
   tools: z.array(ToolEntry).min(1),
   tabs: z.array(TabEntry).min(1),
+  defaultTabId: z.string().min(1).optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -45,4 +47,21 @@ export async function loadConfig(path: string): Promise<Config> {
     throw new Error(`Config ${path} failed validation:\n${parsed.error.toString()}`);
   }
   return parsed.data;
+}
+
+// Atomic write: temp + rename in the same directory.
+export async function writeConfig(path: string, config: Config): Promise<void> {
+  const dir = dirname(path);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const tmp = join(dir, `.config.json.${process.pid}.${Date.now()}.tmp`);
+  await writeFile(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+  await rename(tmp, path);
+}
+
+export function defaultTabFor(config: Config): TabEntry {
+  if (config.defaultTabId) {
+    const found = config.tabs.find((t) => t.id === config.defaultTabId);
+    if (found) return found;
+  }
+  return config.tabs[0];
 }
