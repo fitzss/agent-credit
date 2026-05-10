@@ -8,13 +8,15 @@
 
 - Claude Desktop installed.
 - Node 20+ on `PATH`.
-- `@agent-tab/cli` built (run `npm install && npm run build` in
-  `packages/cli/`).
+- `@agent-tab/cli` installed in a project (e.g.
+  `npm install --save-dev /path/to/agent-tab-cli-0.0.3-rc.1.tgz`),
+  **or** installed globally: `npm install -g
+  /path/to/agent-tab-cli-0.0.3-rc.1.tgz` (so `agent-tab` is on `PATH`).
 
 ## One-time setup
 
 ```bash
-agent-tab init
+npx agent-tab init
 ```
 
 Default config is at `~/.agent-tab/config.json`. Default state at
@@ -30,20 +32,15 @@ Add the `agent-tab` entry under `mcpServers`:
 {
   "mcpServers": {
     "agent-tab": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/agent-credit/packages/cli/dist/index.js",
-        "proxy"
-      ]
+      "command": "npx",
+      "args": ["agent-tab", "proxy"]
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/agent-credit` with the real absolute path
-on your machine (Claude Desktop does not expand `~`).
-
-If you want to point at a non-default config:
+If `agent-tab` is not globally installed and `npx` cannot find it,
+use the absolute path to the bin in your project:
 
 ```json
 {
@@ -51,7 +48,23 @@ If you want to point at a non-default config:
     "agent-tab": {
       "command": "node",
       "args": [
-        "/absolute/path/to/agent-credit/packages/cli/dist/index.js",
+        "/absolute/path/to/your/project/node_modules/.bin/agent-tab",
+        "proxy"
+      ]
+    }
+  }
+}
+```
+
+If you want to point at a non-default config:
+
+```json
+{
+  "mcpServers": {
+    "agent-tab": {
+      "command": "npx",
+      "args": [
+        "agent-tab",
         "proxy",
         "--config",
         "/absolute/path/to/my-config.json"
@@ -77,15 +90,23 @@ Restart Claude Desktop. Claude will list four tools under the
 ## What you do (the human)
 
 ```bash
-agent-tab tabs                           # see current balances
-agent-tab receipts --limit 50            # see recent Work Receipts
-cat ~/.agent-tab/requests.jsonl          # see the authority ledger
-agent-tab grant --request-id <id>        # approve a queued request
-agent-tab grant --tab tab-default --add 5000000000  # operator-initiated raise
+npx agent-tab tabs                           # see current balances
+npx agent-tab receipts --limit 50            # see recent Work Receipts
+npx agent-tab requests --pending             # see queued authority requests
+npx agent-tab grant --request-id <id>        # approve a queued request
+npx agent-tab grant --tab tab-default --add 5000000000  # operator-initiated raise
 ```
 
 The proxy stays running across grants; it re-reads `config.json` on
 every cap check. No restart required.
+
+## Validation note
+
+The release-candidate harness (`npm run test:rc`) validates that this
+recipe's `claude_desktop_config.json` snippet parses as JSON and
+points at the installed `agent-tab` bin. The Claude Desktop GUI
+itself is not exercised automatically. Manual smoke test in Claude
+Desktop is a recommended human verification step.
 
 ## Stopping
 

@@ -7,16 +7,16 @@
 ## Prerequisites
 
 - Node 20+.
-- `@agent-tab/cli` built (run `npm install && npm run build` in
-  `packages/cli/`).
+- `@agent-tab/cli` installed (e.g. `npm install --save-dev
+  /path/to/agent-tab-cli-0.0.3-rc.1.tgz`).
 
 ## One-time setup
 
 ```bash
-agent-tab init
+npx agent-tab init
 ```
 
-This writes `~/.agent-tab/config.json` and creates `~/.agent-tab/`.
+Writes `~/.agent-tab/config.json` and creates `~/.agent-tab/`.
 Default upstream: `npx -y @modelcontextprotocol/server-everything`.
 Default wrapped tools: `budgeted_echo`, `budgeted_get_sum`. Default
 tab limit: 10 credits (10 calls at 1 credit each).
@@ -24,8 +24,7 @@ tab limit: 10 credits (10 calls at 1 credit each).
 ## Run the proxy under MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector \
-  node packages/cli/dist/index.js proxy
+npx @modelcontextprotocol/inspector npx agent-tab proxy
 ```
 
 Inspector opens a web UI. In the **Tools** tab you should see four
@@ -46,16 +45,17 @@ tools:
 3. Call `agent_tab_request_more_authority({ "requestedDelta": "5000000000", "reason": "needs more headroom" })`.
    You receive: "Request submitted (id=…). Human approval is required."
 4. In another terminal, run:
-   `agent-tab grant --request-id <id>`
+   `npx agent-tab grant --request-id <id>`
 5. Without restarting the proxy, call `budgeted_echo` again. Charge
    accepted — the proxy re-reads `config.json` on every cap check.
 
 ## Inspecting state from the shell
 
 ```bash
-agent-tab tabs                           # balance / pending / limit / remaining / utilization / alert
-agent-tab receipts --limit 50            # recent Work Receipts
-cat ~/.agent-tab/requests.jsonl          # authority ledger (request | resolution | grant)
+npx agent-tab tabs                       # balance / pending / limit / remaining / utilization / alert
+npx agent-tab receipts --limit 50        # tool-call ledger (Work Receipt / Denied / Upstream Error)
+npx agent-tab requests                   # authority ledger (request / resolution / grant)
+npx agent-tab requests --pending         # only requests still awaiting approval
 ```
 
 ## Stopping cleanly

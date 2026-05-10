@@ -5,6 +5,7 @@ import { runInit } from "./commands/init.js";
 import { runTabs } from "./commands/tabs.js";
 import { runReceipts } from "./commands/receipts.js";
 import { runGrant } from "./commands/grant.js";
+import { runRequests } from "./commands/requests.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -13,8 +14,8 @@ const DEFAULT_CONFIG = join(homedir(), ".agent-tab", "config.json");
 const program = new Command();
 program
   .name("agent-tab")
-  .description("Agent Tab CLI — MCP proxy (slice 14m.0b)")
-  .version("0.0.2");
+  .description("Agent Tab CLI — local-first MCP proxy with budgeted tools, work receipts, and an authority ledger.")
+  .version("0.0.3-rc.1");
 
 program
   .command("proxy")
@@ -149,14 +150,49 @@ program
     }
   });
 
-// Honest stubs for not-yet-implemented commands.
-for (const cmd of ["sync", "requests"]) {
+program
+  .command("requests")
+  .description("Show authority ledger rows (request, resolution, grant)")
+  .option("-c, --config <path>", "config path")
+  .option("-l, --limit <N>", "max rows (default: 20)")
+  .option("--type <kind>", "filter: request|resolution|grant")
+  .option("--pending", "show only requests still awaiting approval")
+  .option("--tab <id>", "filter by tab id")
+  .option("--since <ISO>", "filter by ISO timestamp")
+  .option("--json", "output JSON")
+  .action(async (opts: {
+    config?: string;
+    limit?: string;
+    type?: string;
+    pending?: boolean;
+    tab?: string;
+    since?: string;
+    json?: boolean;
+  }) => {
+    try {
+      await runRequests({
+        configPath: opts.config,
+        limit: opts.limit,
+        type: opts.type,
+        pending: opts.pending,
+        tab: opts.tab,
+        since: opts.since,
+        json: opts.json,
+      });
+    } catch (e) {
+      console.error("[agent-tab requests] fatal:", (e as Error).message);
+      process.exit(2);
+    }
+  });
+
+// Honest stub for not-yet-implemented commands.
+for (const cmd of ["sync"]) {
   program
     .command(cmd)
-    .description(`(not implemented in slice 14m.0b)`)
+    .description(`(not implemented in slice 14m.0c)`)
     .action(() => {
       console.error(
-        `[agent-tab] '${cmd}' is not implemented in slice 14m.0b. ` +
+        `[agent-tab] '${cmd}' is not implemented in slice 14m.0c. ` +
           `See packages/cli/README.md.`,
       );
       process.exit(2);

@@ -1,17 +1,41 @@
 {
   "name": "@agent-tab/cli",
-  "version": "0.0.1",
+  "version": "0.0.3-rc.1",
   "private": true,
-  "description": "Agent Tab CLI — MCP proxy spike (slice 14m.0a)",
+  "description": "Agent Tab CLI — local-first MCP proxy with budgeted tools, work receipts, and an authority ledger.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "agent-tab": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "recipes/",
+    "sample-config.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "prepack": "npm run build",
+    "test": "node test/spike-gates-14m0b.mjs",
+    "test:rc": "node test/release-candidate.mjs",
     "start": "node dist/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fitzss/agent-credit",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "mcp",
+    "agent-tab",
+    "cli",
+    "proxy",
+    "budget",
+    "model-context-protocol"
+  ],
   "engines": {
     "node": ">=20"
   },
