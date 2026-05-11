@@ -5,7 +5,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession, ownedCustomerIds, authErrorResponse } from "@/lib/auth";
 
 import { nanoCreditsToNanoErg } from "@/lib/credits";
-import { SIDECAR_URL, ERGO_NODE_URL, ERGO_NODE_API_KEY } from "@/lib/env";
+import { SIDECAR_URL, ERGO_NODE_URL, ERGO_NODE_API_KEY, OPERATOR_MAX_REDEEM_NANOERG } from "@/lib/env";
+import { CANONICAL_RESERVE_ID, refuseIfCanonical } from "@/lib/canonical";
 
 /**
  * POST /api/reserves/redeem
@@ -37,9 +38,41 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing required fields: reserveId, obligationId" }, { status: 400 });
   }
 
+  // --- Pre-load canonical refuse (slice 16b) ---
+  // Canonical reserve is globally read-only; refuse before any DB load or
+  // ownership computation. Catches the case where the canonical Reserve row
+  // is missing from DB but the canonical id is still being requested.
+  if (reserveId === CANONICAL_RESERVE_ID) {
+    return NextResponse.json(
+      { error: "canonical reserve is read-only", code: "CANONICAL_REFUSE", field: "reserveId" },
+      { status: 403 },
+    );
+  }
+
   // --- Phase 1: Load both rows (no role-aware decisions, no side effects) ---
-  const reserve = await prisma.reserve.findUnique({ where: { id: reserveId } });
+  const reserve = await prisma.reserve.findUnique({
+    where: { id: reserveId },
+    include: { customer: true },
+  });
   const obligation = await prisma.obligationState.findUnique({ where: { id: obligationId } });
+
+  // --- Post-load canonical refuse (slice 16b) ---
+  // Defense in depth: also refuse if the loaded reserve's tokenId or
+  // trackerNftId match canonical (even if the request used a non-canonical
+  // Reserve.id that happens to alias the canonical token/tracker).
+  if (reserve) {
+    const hit = refuseIfCanonical({
+      reserveId: reserve.id,
+      reserveTokenId: reserve.reserveTokenId,
+      trackerNftId: reserve.trackerNftId,
+    });
+    if (hit) {
+      return NextResponse.json(
+        { error: hit.reason, code: "CANONICAL_REFUSE", field: hit.field },
+        { status: 403 },
+      );
+    }
+  }
 
   // --- Phase 2: Role/ownership decision (must run BEFORE phase 3 mismatch
   // and BEFORE recoverPending). Customer-role users get one collapsed 403 for
@@ -66,6 +99,24 @@ export async function POST(req: NextRequest) {
   // --- Phase 3: Same-customer equality (only reached after ownership confirmed) ---
   if (reserve.customerId !== obligation.customerId) {
     return NextResponse.json({ error: "Reserve and obligation belong to different customers" }, { status: 400 });
+  }
+
+  // --- Self-custody network refuse (slice 16b) ---
+  // Placed AFTER ownership + same-customer to preserve the customer-role
+  // collapsed-403 information-leak guarantee. Reads process.env.ERGO_NETWORK
+  // fresh per request so tests can override without restarting the server.
+  if (reserve.customer?.signingMode === "self-custody") {
+    const ergoNetwork = process.env.ERGO_NETWORK;
+    if (ergoNetwork !== "testnet") {
+      return NextResponse.json(
+        {
+          error: `operator-mode redemption requires ERGO_NETWORK=testnet (got ${JSON.stringify(ergoNetwork)})`,
+          code: "OPERATOR_NETWORK_REFUSE",
+          ergoNetwork: ergoNetwork ?? null,
+        },
+        { status: 403 },
+      );
+    }
   }
 
   // --- Step 1.5: Recover any pending redemptions for this reserve ---
@@ -140,6 +191,25 @@ export async function POST(req: NextRequest) {
   // --- Step 3: Compute redemption parameters ---
   // v1: nanoCredits = nanoERG (identity)
   const redeemAmountNanoErg = nanoCreditsToNanoErg(obligation.currentAmount);
+
+  // --- Operator cap refuse (slice 16b) ---
+  // Fires only for self-custody reserves AND only when the cap env var is set.
+  // Tracker-managed paths (Demo Debtor, prove.sh fixtures) bypass this guard.
+  if (
+    reserve.customer?.signingMode === "self-custody" &&
+    OPERATOR_MAX_REDEEM_NANOERG !== null &&
+    redeemAmountNanoErg > OPERATOR_MAX_REDEEM_NANOERG
+  ) {
+    return NextResponse.json(
+      {
+        error: `redeemAmountNanoErg ${redeemAmountNanoErg.toString()} exceeds OPERATOR_MAX_REDEEM_NANOERG ${OPERATOR_MAX_REDEEM_NANOERG.toString()}`,
+        code: "OPERATOR_CAP",
+        redeemAmountNanoErg: redeemAmountNanoErg.toString(),
+        capNanoErg: OPERATOR_MAX_REDEEM_NANOERG.toString(),
+      },
+      { status: 409 },
+    );
+  }
 
   // Cumulative tracker debt: single source of truth via helper
   const { totalDebtNanoErg, previouslyRedeemedNanoErg } = await computeCumulativeTrackerDebt(

@@ -60,6 +60,41 @@ export const ERGO_NODE_API_KEY = readAlphaRequired(
   "hello",
 );
 
+// Ergo network (slice 16b). Operator-mode redemption refuses unless this is
+// "testnet". The redeem route reads process.env.ERGO_NETWORK fresh per
+// request so tests can override without restarting the server; this export
+// gates boot-time validation in alpha mode.
+export const ERGO_NETWORK = readAlphaRequired(
+  "ERGO_NETWORK",
+  "testnet",
+);
+
+// Optional cap on self-custody redemption amounts (slice 16b). Unset/empty
+// disables the cap. Boot-time parsed once; the redeem route reads this
+// exported value (not process.env directly) so an operator restarting the
+// server is the explicit gesture to change the cap.
+export const OPERATOR_MAX_REDEEM_NANOERG: bigint | null = parseOperatorMaxRedeem();
+
+function parseOperatorMaxRedeem(): bigint | null {
+  const raw = process.env.OPERATOR_MAX_REDEEM_NANOERG;
+  if (raw === undefined || raw === null || raw.trim() === "") return null;
+  let v: bigint;
+  try {
+    v = BigInt(raw.trim());
+  } catch (e) {
+    throw new Error(
+      `[env] OPERATOR_MAX_REDEEM_NANOERG must be a BigInt-parseable integer; ` +
+      `got ${JSON.stringify(raw)} (${e instanceof Error ? e.message : String(e)})`,
+    );
+  }
+  if (v < BigInt(0)) {
+    throw new Error(
+      `[env] OPERATOR_MAX_REDEEM_NANOERG must be non-negative; got ${v.toString()}`,
+    );
+  }
+  return v;
+}
+
 // Boot-time validation of required vars that don't have dev fallbacks.
 // This intentionally does not memoize the values — callers that need them
 // (e.g., agent-key-hash.ts for AGENT_API_KEY_PEPPER) read process.env directly

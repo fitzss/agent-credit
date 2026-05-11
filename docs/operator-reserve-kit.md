@@ -314,16 +314,31 @@ Read-only. Never mutates DB or files.
 
 ## Roadmap (16b → 16c)
 
-### 16b — server-side guards in `/api/reserves/redeem`
+### 16b — server-side guards in `/api/reserves/redeem` ✓ implemented
 
-- New `src/lib/canonical.ts` module + `refuseIfCanonical()` helper.
-- Canonical reserve targeting → 403 `CANONICAL_REFUSE`.
-- `assertOperatorTestnet(reserve)` when
-  `reserve.customer.signingMode === "self-custody"` →
-  refuses unless `ERGO_NETWORK=testnet`.
-- `OPERATOR_MAX_REDEEM_NANOERG` env-driven cap → 409
-  `OPERATOR_CAP`.
-- `ERGO_NETWORK` centralized in `src/lib/env.ts`.
+- `src/lib/canonical.ts` (NEW) — `CANONICAL_RESERVE_ID`,
+  `CANONICAL_RESERVE_TOKEN_ID`, `CANONICAL_TRACKER_NFT_ID` +
+  `refuseIfCanonical()` helper.
+- Canonical reserve targeting → **403 `CANONICAL_REFUSE`** (with
+  `field` indicating which identifier matched). Refusal is
+  pre-load on `reserveId` and post-load on `reserveTokenId` /
+  `trackerNftId` for defense in depth.
+- Self-custody redemption requires `process.env.ERGO_NETWORK ===
+  "testnet"`; anything else (mainnet, unset, empty) returns
+  **403 `OPERATOR_NETWORK_REFUSE`**. The guard fires AFTER
+  ownership + same-customer to preserve the existing
+  collapsed-403 information-leak guarantee for unauthorized
+  customer-role callers.
+- `OPERATOR_MAX_REDEEM_NANOERG` env-driven cap → **409
+  `OPERATOR_CAP`**. Fires only for self-custody reserves. Unset
+  / empty = cap disabled. See the `.env.example` block for
+  the documented shape.
+- `ERGO_NETWORK` centralized in `src/lib/env.ts` (boot-time
+  validation in alpha mode); the redeem route reads
+  `process.env.ERGO_NETWORK` fresh per request so tests can
+  override without restarting the server.
+- Tracker-managed (Demo Debtor) paths bypass network + cap
+  guards entirely. `prove.sh` remains 49/49.
 
 ### 16c — operator-reserve settlement vertical
 
