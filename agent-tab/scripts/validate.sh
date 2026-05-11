@@ -37,13 +37,15 @@ async function main(){
   // Find the canonical reserve: the one with real on-chain settlement history.
   // Search ALL active reserves (any contract version) and pick the one with settlements.
   // The contract version may be mis-derived by the sidecar — settlement history is the true signal.
-  const allActive = await p.reserve.findMany({where:{lifecycle:'active',valueNanoErg:{gt:0}},orderBy:{updatedAt:'desc'}});
+  // Exclude self-custody operator reserves (slice 16c) — Suite 1 scenarios assume the
+  // tracker-managed Demo Debtor fixture (multi-obligation customer, DB-held privateKey).
+  const allActive = await p.reserve.findMany({where:{lifecycle:'active',valueNanoErg:{gt:0},customer:{signingMode:{not:'self-custody'}}},orderBy:{updatedAt:'desc'}});
   let v2 = null;
   for(const r of allActive){
     const sc = await p.settlementEvent.count({where:{reserveId:r.id,method:'on-chain-redemption'}});
     if(sc > 0){ v2 = r; break; }
   }
-  if(!v2) v2 = allActive[0]; // fallback to most recent
+  if(!v2) v2 = allActive[0]; // fallback to most recent tracker-managed
   // Find v1 reserve that has prior settlements (for repeat-block test).
   // Exclude V2_RESERVE so V1 != V2 — scenario 13 PATCHes V1, which would
   // otherwise overwrite scenario 9's contractVersion restore on V2.

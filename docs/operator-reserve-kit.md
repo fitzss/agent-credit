@@ -340,21 +340,48 @@ Read-only. Never mutates DB or files.
 - Tracker-managed (Demo Debtor) paths bypass network + cap
   guards entirely. `prove.sh` remains 49/49.
 
-### 16c — operator-reserve settlement vertical
+### 16c — operator-reserve settlement vertical ✓ implemented
 
 - New explicit flag on the 15a bridge:
-  `--reserve-manifest .demo-state/operator-reserve.json`.
-- When supplied, the bridge settles against the operator's
-  reserve. The default (no flag) keeps reading the demo manifest.
-- Before settlement, the operator's
-  `~/.chaincash-secrets/owner-<hex8>.json` must contain
-  `{ pubKeyHex, secretHex }` matching their
-  `operator-key.json` — same scalar, different field names
-  (the chaincash sidecar's existing convention).
+  `--reserve-manifest .demo-state/operator-reserve.json`. When
+  supplied, the bridge settles against the operator's reserve.
+  The default (no flag) keeps reading the demo manifest —
+  byte-equivalent to 15a behavior.
+- Operator-mode lifecycle pre-check: if the manifest is at
+  `lifecycle="requested"`, the script exits 1 with concrete
+  instructions (mint reserveToken, submit deploy tx, run
+  `--sync`). No DB mutation.
+- Operator-mode lane provisioning: the script reuses the existing
+  MCP Bridge Demo Tools provider + budgeted_echo tool but creates
+  a fresh CreditLine + ObligationState + AgentIdentity scoped to
+  the operator's Customer. Demo Debtor's lane is untouched.
+- Operator-mode sidecar secret-file pre-provisioning: Stage 0
+  reads `.demo-state/operator-key.json` and writes
+  `~/.chaincash-secrets/owner-<hex8>.json` (mode 0o600) so the
+  sidecar can sign the redemption tx. Idempotent: refuses to
+  overwrite an existing file whose `pubKeyHex` mismatches.
+- The 16b server-side guards (canonical refuse, network refuse,
+  operator cap) fire on the redeem route as before.
+- `src/lib/reconcile.ts:ensureSecretFile()` was reordered so the
+  self-custody path (`Customer.privateKey=""` + pre-provisioned
+  file) succeeds without requiring a DB key. Tracker-managed
+  behavior is unchanged.
 
-After 16c, a one-command operator vertical lands a
-`SettlementEvent` against the operator's reserve, with all 16b
-guards firing server-side.
+```bash
+# After operator setup (mint reserveToken + deploy + --sync to active):
+cd agent-tab
+npx tsx scripts/receipt-to-settlement-demo.ts \
+  --reserve-manifest .demo-state/operator-reserve.json \
+  --receipts-path ~/.agent-tab/receipts.jsonl
+# → SettlementEvent against operator reserveId, redemptionTxId on testnet
+```
+
+**Honesty: tracker reuse.** 16c proves operator-owned **reserve**
+settlement. The shared 15a testnet tracker NFT (`b84289dd…`) is
+reused; the tracker box advances and gains a new entry under the
+operator's `(debtorPubKey, creditorPubKey)` pair when settlement
+fires. Existing tracker entries (Demo Debtor's) are not modified —
+only added-to. Independent operator-tracker deployment is deferred.
 
 ## Honesty footnote
 
@@ -368,14 +395,12 @@ mainnet-readiness work that gates 17+. Until those land, the
 testnet (identity + manifest foundation)" — a foundation, not the
 finished posture.
 
-Specifically, 16a-core does **not** prove an operator can settle
-against their own reserve. It proves they can produce a verifiable
+Specifically, 16a-core proves an operator can produce a verifiable
 local identity + manifest + deploy spec that, after the operator
 submits the deploy tx via their own wallet, the existing
 `PATCH /api/reserves` sync route can transition to
-`lifecycle="active"`. That last step's end-to-end validation
-arrives in the next operator-reserve slice; settlement follows
-in 16c.
+`lifecycle="active"`. Operator-owned settlement against that
+reserve is added in 16c (see roadmap above).
 
 This documentation is **not legal advice.** It describes the
 technical posture of the software. Operators considering mainnet

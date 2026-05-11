@@ -18,10 +18,10 @@ const SECRETS_DIR = path.join(os.homedir(), ".chaincash-secrets");
 /**
  * Ensure a secret file exists for a given role (owner/receiver) and pubkey.
  *
- * - If missing: creates it from the provided secretHex, mode 0o600
- * - If exists and pubKeyHex matches: no-op
- * - If exists but pubKeyHex mismatches: throws (never overwrites)
- * - If secretHex is empty/null in DB: throws with clear error
+ * - If file exists and pubKeyHex matches: no-op (tracker-managed or self-custody both fine)
+ * - If file exists but pubKeyHex mismatches: throws (never overwrites)
+ * - If file is missing and secretHex provided: creates it, mode 0o600 (tracker-managed path)
+ * - If file is missing and secretHex empty/null: throws with self-custody-aware message
  *
  * File naming: {role}-{first8hexOfPubKey}.json
  * Contents: { "pubKeyHex": "...", "secretHex": "..." }
@@ -31,13 +31,6 @@ export function ensureSecretFile(
   pubKeyHex: string,
   secretHex: string | null,
 ): void {
-  if (!secretHex) {
-    throw new ReconcileError(
-      `No private key in DB for ${role} (pubkey ${pubKeyHex.substring(0, 16)}...). Cannot provision secret file.`,
-      400,
-    );
-  }
-
   if (!fs.existsSync(SECRETS_DIR)) {
     fs.mkdirSync(SECRETS_DIR, { mode: 0o700 });
   }
@@ -47,27 +40,40 @@ export function ensureSecretFile(
   const filepath = path.join(SECRETS_DIR, filename);
 
   if (fs.existsSync(filepath)) {
-    // Verify match
+    // Verify the existing file matches the expected pubkey. This path covers
+    // both tracker-managed (re-runs) and self-custody (file pre-provisioned
+    // out-of-band) — neither needs secretHex to be in the DB.
+    let existing: { pubKeyHex?: string };
     try {
-      const existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
-      if (existing.pubKeyHex !== pubKeyHex) {
-        throw new ReconcileError(
-          `Secret file ${filename} exists but pubKeyHex mismatches. ` +
-          `File has ${existing.pubKeyHex?.substring(0, 16)}..., expected ${pubKeyHex.substring(0, 16)}... ` +
-          `Refusing to overwrite. Remove the file manually if the old key is no longer needed.`,
-          409,
-        );
-      }
-      // Match — nothing to do
+      existing = JSON.parse(fs.readFileSync(filepath, "utf-8"));
     } catch (e) {
-      if (e instanceof ReconcileError) throw e;
       throw new ReconcileError(`Cannot read existing secret file ${filename}: ${e}`, 500);
     }
-  } else {
-    // Create
-    const content = JSON.stringify({ pubKeyHex, secretHex }, null, 2);
-    fs.writeFileSync(filepath, content, { mode: 0o600 });
+    if (existing.pubKeyHex !== pubKeyHex) {
+      throw new ReconcileError(
+        `Secret file ${filename} exists but pubKeyHex mismatches. ` +
+        `File has ${existing.pubKeyHex?.substring(0, 16)}..., expected ${pubKeyHex.substring(0, 16)}... ` +
+        `Refusing to overwrite. Remove the file manually if the old key is no longer needed.`,
+        409,
+      );
+    }
+    // Match — nothing to do
+    return;
   }
+
+  // File missing: require secretHex to create it (tracker-managed path).
+  if (!secretHex) {
+    throw new ReconcileError(
+      `Secret file ${filename} missing for ${role} (pubkey ${pubKeyHex.substring(0, 16)}...) ` +
+      `and no private key available in DB. ` +
+      `For self-custody: run operator-reserve-init.ts --prepare or place the expected owner secret file at ` +
+      `~/.chaincash-secrets/${filename}.`,
+      400,
+    );
+  }
+
+  const content = JSON.stringify({ pubKeyHex, secretHex }, null, 2);
+  fs.writeFileSync(filepath, content, { mode: 0o600 });
 }
 
 export interface ReconcileInput {

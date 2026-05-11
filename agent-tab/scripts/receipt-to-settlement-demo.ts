@@ -46,11 +46,17 @@ const DEMO_STATE_DIR = path.join(__dirname, "..", ".demo-state");
 const MANIFEST_FILE = path.join(DEMO_STATE_DIR, "settlement-demo-reserve.json");
 
 // MCP Bridge fixture (15a-dedicated; never collides with Repo-lint).
+// In 15a demo mode the agent + credit-line are pinned to Demo Debtor;
+// in 16c operator mode a separate operator-scoped agent + credit-line
+// pair is created under the operator customer (same Provider + Tool).
 const BRIDGE_PROVIDER_ID = "mcp-bridge-demo-provider-001";
 const BRIDGE_PROVIDER_NAME = "MCP Bridge Demo Tools";
 const BRIDGE_AGENT_ID = "mcp-bridge-demo-agent-001";
 const BRIDGE_AGENT_LABEL = "mcp-bridge-demo-agent";
 const BRIDGE_CL_ID = "mcp-bridge-demo-cl-001";
+const OPERATOR_BRIDGE_AGENT_ID = "operator-bridge-demo-agent-001";
+const OPERATOR_BRIDGE_AGENT_LABEL = "operator-bridge-demo-agent";
+const OPERATOR_BRIDGE_CL_ID = "operator-bridge-demo-cl-001";
 const BRIDGE_CL_LIMIT = BigInt("100000000000"); // 100 credits — many runs fit.
 const BRIDGE_TOOLS = [
   // Tool name MUST match the local receipt's `tool` field exactly.
@@ -69,6 +75,7 @@ interface Args {
   receiptId: string | undefined;
   baseUrl: string;
   dryRun: boolean;
+  reserveManifestPath: string | undefined;  // 16c: operator-mode manifest path; undefined = demo mode
   help: boolean;
 }
 
@@ -78,6 +85,7 @@ function parseArgs(argv: string[]): Args {
     receiptId: undefined,
     baseUrl: DEFAULT_BASE_URL,
     dryRun: false,
+    reserveManifestPath: undefined,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -87,23 +95,37 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--receipt-id") a.receiptId = argv[++i];
     else if (arg === "--base-url") a.baseUrl = argv[++i] ?? a.baseUrl;
     else if (arg === "--dry-run") a.dryRun = true;
+    else if (arg === "--reserve-manifest") a.reserveManifestPath = argv[++i];
     else throw new Error(`Unknown flag: ${arg}`);
   }
   return a;
 }
 
 const HELP = `\
-receipt-to-settlement-demo (slice 15a) — one local MCP Work Receipt → settlement
+receipt-to-settlement-demo (slice 15a + 16c) — one local MCP Work Receipt → settlement
 
 Usage:
   npx tsx scripts/receipt-to-settlement-demo.ts [flags]
 
+Modes:
+  Default (no --reserve-manifest): 15a demo mode. Settles against the
+    slice-13b dedicated demo reserve under Demo Debtor. Reads manifest
+    at .demo-state/settlement-demo-reserve.json.
+  Operator mode (--reserve-manifest <path>): 16c. Settles against an
+    operator-owned reserve described by an operator-reserve-manifest
+    (kind="operator-reserve-manifest"). The reserve must be at
+    lifecycle="active"; otherwise the script stops with an instruction
+    to submit the deploy tx + run operator-reserve-init.ts --sync.
+
 Flags:
-  --receipts-path <path>  default: ~/.agent-tab/receipts.jsonl
-  --receipt-id <id>       which row to import; default = last outcome="success"
-  --base-url <url>        default: $AGENT_TAB_BASE_URL or http://localhost:3000
-  --dry-run               preflight + ensure-fixture + receipt selection +
-                          tool-name match. NO DB mutation. NO readiness audit.
+  --receipts-path <path>      default: ~/.agent-tab/receipts.jsonl
+  --receipt-id <id>           which row to import; default = last outcome="success"
+  --base-url <url>            default: $AGENT_TAB_BASE_URL or http://localhost:3000
+  --reserve-manifest <path>   16c operator-mode manifest (explicit; no silent
+                              preference). Must be of kind "operator-reserve-manifest".
+  --dry-run                   preflight + ensure-fixture + receipt selection +
+                              tool-name match. NO DB mutation. NO readiness audit.
+                              Works in both demo and operator modes.
   --help, -h
 `;
 
@@ -117,9 +139,10 @@ function fail(stage: string, msg: string, code = 2): never {
   process.exit(code);
 }
 
-// ─── Manifest helpers (copied from 13c pattern) ─────────────────────────
+// ─── Manifest helpers (copied from 13c pattern; extended in 16c) ────────
 
-interface Manifest {
+// Legacy 15a/13b demo manifest (no `kind` field).
+interface LegacyDemoManifest {
   reserveId: string;
   reserveTokenId: string;
   trackerNftId: string;
@@ -131,9 +154,51 @@ interface Manifest {
   note?: string;
 }
 
-function readManifest(): Manifest | null {
-  if (!fs.existsSync(MANIFEST_FILE)) return null;
-  return JSON.parse(fs.readFileSync(MANIFEST_FILE, "utf-8")) as Manifest;
+// 16a-core operator manifest (kind="operator-reserve-manifest").
+interface OperatorReserveManifest {
+  kind: "operator-reserve-manifest";
+  version: string;
+  reserveId: string;
+  reserveTokenId: string;
+  trackerNftId: string;
+  operatorCustomerId: string;
+  operatorPublicKey: string;
+  reserveAddress: string;
+  network: string;
+  lifecycle: string;
+  initialCollateralNanoErg: string;
+  preparedAt: string;
+  syncedAt: string | null;
+  proofOfControl?: unknown;
+  deploySpecPath?: string;
+  note?: string;
+}
+
+type Manifest = LegacyDemoManifest | OperatorReserveManifest;
+
+function readManifestAt(filePath: string): unknown {
+  if (!fs.existsSync(filePath)) return null;
+  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+}
+
+function isOperatorManifest(m: unknown): m is OperatorReserveManifest {
+  return (
+    typeof m === "object" &&
+    m !== null &&
+    (m as Record<string, unknown>).kind === "operator-reserve-manifest"
+  );
+}
+
+function isLegacyDemoManifest(m: unknown): m is LegacyDemoManifest {
+  if (typeof m !== "object" || m === null) return false;
+  const o = m as Record<string, unknown>;
+  return (
+    typeof o.reserveId === "string" &&
+    typeof o.reserveTokenId === "string" &&
+    typeof o.trackerNftId === "string" &&
+    typeof o.customerId === "string" &&
+    o.kind === undefined
+  );
 }
 
 function isCanonical(m: Manifest): { hit: boolean; field?: string } {
@@ -299,6 +364,65 @@ async function ensureBridgeCreditLine(providerId: string, customerId: string): P
   return created;
 }
 
+// 16c: operator-scoped agent + credit-line under the operator customer.
+// Distinct id/label from BRIDGE_* so it can coexist with the demo lane.
+async function ensureOperatorBridgeAgent(customerId: string): Promise<{ id: string }> {
+  const existing = await prisma.agentIdentity.findUnique({
+    where: { id: OPERATOR_BRIDGE_AGENT_ID },
+    select: { id: true, status: true, customerId: true },
+  });
+  if (existing) {
+    if (existing.customerId !== customerId) {
+      throw new Error(
+        `AgentIdentity ${OPERATOR_BRIDGE_AGENT_ID} customerId mismatch: ` +
+        `expected ${customerId}, got ${existing.customerId}`,
+      );
+    }
+    if (existing.status !== "active") {
+      await prisma.agentIdentity.update({ where: { id: OPERATOR_BRIDGE_AGENT_ID }, data: { status: "active" } });
+    }
+    return { id: existing.id };
+  }
+  const created = await prisma.agentIdentity.create({
+    data: {
+      id: OPERATOR_BRIDGE_AGENT_ID,
+      customerId,
+      label: OPERATOR_BRIDGE_AGENT_LABEL,
+      apiKeyHash: `operator-bridge-16c-no-proxy-key-${OPERATOR_BRIDGE_AGENT_ID}`,
+      apiKeyPreview: "(16c operator bridge — no key)",
+      allowedToolIds: "*",
+    },
+    select: { id: true },
+  });
+  return created;
+}
+
+async function ensureOperatorBridgeCreditLine(providerId: string, customerId: string): Promise<{ id: string }> {
+  const existing = await prisma.creditLine.findFirst({
+    where: { providerId, customerId },
+    select: { id: true, status: true, limitAmount: true },
+  });
+  if (existing) {
+    if (existing.status !== "active" || existing.limitAmount < BRIDGE_CL_LIMIT) {
+      await prisma.creditLine.update({
+        where: { id: existing.id },
+        data: { status: "active", limitAmount: BRIDGE_CL_LIMIT },
+      });
+    }
+    return { id: existing.id };
+  }
+  const created = await prisma.creditLine.create({
+    data: {
+      id: OPERATOR_BRIDGE_CL_ID,
+      providerId,
+      customerId,
+      limitAmount: BRIDGE_CL_LIMIT,
+    },
+    select: { id: true },
+  });
+  return created;
+}
+
 // ─── Subprocess + HTTP helpers ──────────────────────────────────────────
 
 function runReadinessAuditSync(reserveId: string, obligationStateId: string): { stdout: string; stderr: string; code: number } {
@@ -396,50 +520,194 @@ async function main(args: Args): Promise<void> {
   }
   ok("Stage 0", "operator cookie minted");
 
-  // 0c. Demo Debtor exists with signingMode="tracker".
-  const debtor = await prisma.customer.findFirst({
-    where: { name: "Demo Debtor" },
-    select: { id: true, signingMode: true, publicKey: true, privateKey: true },
-  });
-  if (!debtor) {
-    fail(
-      "Stage 0",
-      "Demo Debtor not found. Run: npx tsx scripts/seed-debtor.ts (or any seeder that creates Demo Debtor)",
-    );
-  }
-  if (debtor.signingMode !== "tracker") {
-    fail("Stage 0", `Demo Debtor signingMode is ${JSON.stringify(debtor.signingMode)}, expected "tracker"`);
-  }
-  if (!debtor.privateKey || debtor.privateKey.length === 0) {
-    fail("Stage 0", "Demo Debtor.privateKey missing — tracker-managed signing requires it");
-  }
-  ok("Stage 0", `Demo Debtor exists (id=${debtor.id.slice(0, 8)}…, signingMode=tracker)`);
+  // 0c. Mode detection + customer/reserve resolution.
+  //
+  //   Default (no --reserve-manifest): demo mode under Demo Debtor with
+  //   the slice-13b demo reserve. Existing 15a behavior.
+  //
+  //   Operator (--reserve-manifest <path>): 16c. Manifest must be
+  //   kind="operator-reserve-manifest" with lifecycle="active".
+  //   Reserve is operator-owned; tracker may be reused from 15a (a
+  //   deliberate 16c scope choice — independent operator tracker is
+  //   deferred to a later slice).
+  const mode: "demo" | "operator" = args.reserveManifestPath ? "operator" : "demo";
+  ok("Stage 0", `mode=${mode}${mode === "operator" ? ` (manifest=${args.reserveManifestPath})` : ""}`);
 
-  // 0d. Demo reserve manifest + canonical denylist.
-  const manifest = readManifest();
-  if (!manifest) {
-    fail(
-      "Stage 0",
-      `Missing demo reserve manifest at ${MANIFEST_FILE}. Run slice 13b first: ` +
-        `cd agent-tab && npx tsx scripts/seed-settlement-demo-reserve.ts --prepare ` +
-        `&& npx tsx scripts/seed-settlement-demo-reserve.ts --sync`,
-    );
+  let customer: { id: string; signingMode: string; publicKey: string; privateKey: string | null };
+  let targetReserve: { id: string; lifecycle: string; valueNanoErg: bigint; customerId: string; reserveTokenId: string; trackerNftId: string };
+  let manifestForStage6: Manifest;
+  let agentIdForUsage: string;
+  let ensureAgent: (cid: string) => Promise<{ id: string }>;
+  let ensureCreditLine: (pid: string, cid: string) => Promise<{ id: string }>;
+
+  if (mode === "demo") {
+    // 0c-demo. Demo Debtor exists with signingMode="tracker".
+    const debtor = await prisma.customer.findFirst({
+      where: { name: "Demo Debtor" },
+      select: { id: true, signingMode: true, publicKey: true, privateKey: true },
+    });
+    if (!debtor) {
+      fail(
+        "Stage 0",
+        "Demo Debtor not found. Run: npx tsx scripts/seed-debtor.ts (or any seeder that creates Demo Debtor)",
+      );
+    }
+    if (debtor.signingMode !== "tracker") {
+      fail("Stage 0", `Demo Debtor signingMode is ${JSON.stringify(debtor.signingMode)}, expected "tracker"`);
+    }
+    if (!debtor.privateKey || debtor.privateKey.length === 0) {
+      fail("Stage 0", "Demo Debtor.privateKey missing — tracker-managed signing requires it");
+    }
+    ok("Stage 0", `Demo Debtor exists (id=${debtor.id.slice(0, 8)}…, signingMode=tracker)`);
+    customer = debtor;
+
+    // 0d-demo. Demo reserve manifest + canonical denylist.
+    const raw = readManifestAt(MANIFEST_FILE);
+    if (!raw) {
+      fail(
+        "Stage 0",
+        `Missing demo reserve manifest at ${MANIFEST_FILE}. Run slice 13b first: ` +
+          `cd agent-tab && npx tsx scripts/seed-settlement-demo-reserve.ts --prepare ` +
+          `&& npx tsx scripts/seed-settlement-demo-reserve.ts --sync`,
+      );
+    }
+    if (isOperatorManifest(raw)) {
+      fail("Stage 0", `default demo path requires the LEGACY demo manifest at ${MANIFEST_FILE}, but found an operator-reserve-manifest. Either pass --reserve-manifest <operator-path> explicitly, or restore the demo manifest.`);
+    }
+    if (!isLegacyDemoManifest(raw)) {
+      fail("Stage 0", `manifest at ${MANIFEST_FILE} does not match the expected legacy demo shape (reserveId/reserveTokenId/trackerNftId/customerId fields).`);
+    }
+    const m: LegacyDemoManifest = raw;
+    const cd = isCanonical(m);
+    if (cd.hit) {
+      fail("Stage 0", `PANIC: manifest matches canonical reserve (${cd.field}). Refusing to proceed.`);
+    }
+    const demoReserve = await prisma.reserve.findUnique({
+      where: { id: m.reserveId },
+      select: { id: true, lifecycle: true, valueNanoErg: true, customerId: true, reserveTokenId: true, trackerNftId: true },
+    });
+    if (!demoReserve) {
+      fail("Stage 0", `manifest references reserveId=${m.reserveId} but no Reserve row exists`);
+    }
+    if (demoReserve.lifecycle !== "active") {
+      fail("Stage 0", `demo Reserve lifecycle is ${demoReserve.lifecycle}, expected "active"`);
+    }
+    ok("Stage 0", `demo reserve (id=${demoReserve.id.slice(0, 8)}…, value=${demoReserve.valueNanoErg} nanoERG, NOT canonical)`);
+    targetReserve = demoReserve;
+    manifestForStage6 = m;
+    agentIdForUsage = BRIDGE_AGENT_ID;
+    ensureAgent = ensureBridgeAgent;
+    ensureCreditLine = ensureBridgeCreditLine;
+  } else {
+    // 0c-operator. Read explicit operator manifest.
+    if (!args.reserveManifestPath) {
+      fail("Stage 0", "internal: operator mode without --reserve-manifest path (unreachable)");
+    }
+    const raw = readManifestAt(args.reserveManifestPath);
+    if (!raw) {
+      fail("Stage 0", `--reserve-manifest path not found: ${args.reserveManifestPath}`);
+    }
+    if (isLegacyDemoManifest(raw)) {
+      fail(
+        "Stage 0",
+        `--reserve-manifest expected an operator-reserve-manifest (kind="operator-reserve-manifest") but got a legacy demo manifest at ${args.reserveManifestPath}. Refusing — operator mode requires explicit operator manifest.`,
+      );
+    }
+    if (!isOperatorManifest(raw)) {
+      fail(
+        "Stage 0",
+        `--reserve-manifest contents are not an operator-reserve-manifest at ${args.reserveManifestPath}. Expected kind="operator-reserve-manifest"; got ${JSON.stringify((raw as Record<string, unknown>).kind ?? "<missing>")}.`,
+      );
+    }
+    const opM: OperatorReserveManifest = raw;
+    const cd = isCanonical(opM);
+    if (cd.hit) {
+      fail("Stage 0", `PANIC: operator manifest matches canonical reserve (${cd.field}). Refusing to proceed.`);
+    }
+    // Lifecycle pre-check (refuse if not active; resumable instruction).
+    if (opM.lifecycle !== "active") {
+      const reserveIdShort = opM.reserveId.slice(0, 8);
+      console.error(
+        `[15a] Stage 0 ✗ operator reserve ${reserveIdShort}… is at lifecycle="${opM.lifecycle}", not "active".\n` +
+        `       To activate:\n` +
+        `         1. ensure your wallet holds the singleton reserveToken;\n` +
+        `         2. submit the deploy tx via your Ergo testnet wallet using\n` +
+        `            ${opM.deploySpecPath ?? ".demo-state/operator-reserve-deploy.json"}'s\n` +
+        `            deploymentRequestJson;\n` +
+        `         3. run \`npx tsx scripts/operator-reserve-init.ts --sync\` until lifecycle=active;\n` +
+        `         4. re-run this command.`,
+      );
+      process.exit(1);
+    }
+    // Operator Customer must exist.
+    const opCustomer = await prisma.customer.findUnique({
+      where: { id: opM.operatorCustomerId },
+      select: { id: true, name: true, signingMode: true, publicKey: true, privateKey: true },
+    });
+    if (!opCustomer) {
+      fail("Stage 0", `manifest.operatorCustomerId ${opM.operatorCustomerId} does not match any Customer row`);
+    }
+    if (opCustomer.signingMode !== "self-custody") {
+      fail("Stage 0", `operator Customer signingMode is ${JSON.stringify(opCustomer.signingMode)}, expected "self-custody"`);
+    }
+    if (opCustomer.publicKey !== opM.operatorPublicKey) {
+      fail("Stage 0", `operator Customer publicKey mismatches manifest operatorPublicKey`);
+    }
+    ok("Stage 0", `operator Customer "${opCustomer.name}" (id=${opCustomer.id.slice(0, 8)}…, signingMode=self-custody)`);
+    customer = opCustomer;
+
+    // Operator Reserve must exist + be active.
+    const opReserve = await prisma.reserve.findUnique({
+      where: { id: opM.reserveId },
+      select: { id: true, lifecycle: true, valueNanoErg: true, customerId: true, reserveTokenId: true, trackerNftId: true },
+    });
+    if (!opReserve) {
+      fail("Stage 0", `manifest.reserveId ${opM.reserveId} not found in DB`);
+    }
+    if (opReserve.lifecycle !== "active") {
+      fail("Stage 0", `operator Reserve DB row lifecycle=${opReserve.lifecycle}; manifest claims active but DB disagrees`);
+    }
+    if (opReserve.customerId !== opCustomer.id) {
+      fail("Stage 0", `operator Reserve.customerId ${opReserve.customerId} does not match operator Customer ${opCustomer.id}`);
+    }
+    ok("Stage 0", `operator reserve (id=${opReserve.id.slice(0, 8)}…, value=${opReserve.valueNanoErg} nanoERG, NOT canonical)`);
+    // Honest disclosure if the tracker is the 15a shared tracker.
+    if (opReserve.trackerNftId === "b84289dd847e8a3a8dbdf02fc458e663a40d9ba082b19d273e27368d24f9131a") {
+      info("Stage 0", `note: operator reserve trusts the 15a shared testnet tracker (b84289dd…). 16c scope reuses this tracker; independent operator tracker is deferred.`);
+    }
+    targetReserve = opReserve;
+    manifestForStage6 = opM;
+    agentIdForUsage = OPERATOR_BRIDGE_AGENT_ID;
+    ensureAgent = ensureOperatorBridgeAgent;
+    ensureCreditLine = ensureOperatorBridgeCreditLine;
+
+    // 16c: in operator mode the Customer.privateKey is empty (self-custody),
+    // so the redeem route's ensureSecretFile() cannot auto-provision the
+    // sidecar's owner secret file. Provision it here from
+    // .demo-state/operator-key.json (mode 0o600 on disk; same format
+    // ~/.chaincash-secrets/owner-<hex8>.json expects). Idempotent: only
+    // writes if missing; refuses to overwrite a mismatching file.
+    if (!args.dryRun) {
+      const opKeyPath = path.join(DEMO_STATE_DIR, "operator-key.json");
+      if (!fs.existsSync(opKeyPath)) {
+        fail("Stage 0", `operator-key.json missing at ${opKeyPath}; cannot provision sidecar secret file`);
+      }
+      const opKey = JSON.parse(fs.readFileSync(opKeyPath, "utf-8")) as { publicKey: string; privateKey: string };
+      const secretsDir = path.join(os.homedir(), ".chaincash-secrets");
+      const ownerFile = path.join(secretsDir, `owner-${opKey.publicKey.substring(0, 8)}.json`);
+      if (fs.existsSync(ownerFile)) {
+        const existing = JSON.parse(fs.readFileSync(ownerFile, "utf-8")) as { pubKeyHex?: string; secretHex?: string };
+        if (existing.pubKeyHex && existing.pubKeyHex !== opKey.publicKey) {
+          fail("Stage 0", `sidecar secret file ${ownerFile} exists with mismatching pubKeyHex; refusing to overwrite`);
+        }
+        ok("Stage 0", `sidecar owner secret file present (${ownerFile.replace(os.homedir(), "~")})`);
+      } else {
+        if (!fs.existsSync(secretsDir)) fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(ownerFile, JSON.stringify({ pubKeyHex: opKey.publicKey, secretHex: opKey.privateKey }, null, 2), { mode: 0o600 });
+        ok("Stage 0", `sidecar owner secret file provisioned (${ownerFile.replace(os.homedir(), "~")}, mode 0o600)`);
+      }
+    }
   }
-  const cd = isCanonical(manifest);
-  if (cd.hit) {
-    fail("Stage 0", `PANIC: manifest matches canonical reserve (${cd.field}). Refusing to proceed.`);
-  }
-  const demoReserve = await prisma.reserve.findUnique({
-    where: { id: manifest.reserveId },
-    select: { id: true, lifecycle: true, valueNanoErg: true, customerId: true },
-  });
-  if (!demoReserve) {
-    fail("Stage 0", `manifest references reserveId=${manifest.reserveId} but no Reserve row exists`);
-  }
-  if (demoReserve.lifecycle !== "active") {
-    fail("Stage 0", `demo Reserve lifecycle is ${demoReserve.lifecycle}, expected "active"`);
-  }
-  ok("Stage 0", `demo reserve (id=${demoReserve.id.slice(0, 8)}…, value=${demoReserve.valueNanoErg} nanoERG, NOT canonical)`);
 
   // ─── STAGE 1 — BRIDGE FIXTURE ───
   // In dry-run: peek at existing rows; do NOT ensure (no DB mutation).
@@ -470,14 +738,15 @@ async function main(args: Args): Promise<void> {
       console.log(`  CreditLine:    ${BRIDGE_CL_ID} limit=${BRIDGE_CL_LIMIT.toString()}`);
     }
   } else {
-    info("Stage 1", "ensuring MCP Bridge fixture (idempotent)…");
+    info("Stage 1", `ensuring MCP Bridge fixture (idempotent, ${mode} mode)…`);
     provider = await ensureBridgeProvider();
     for (const t of BRIDGE_TOOLS) {
       await ensureBridgeTool(t.id, t.name, t.cost);
     }
-    await ensureBridgeAgent(debtor.id);
-    await ensureBridgeCreditLine(provider.id, debtor.id);
-    ok("Stage 1", `bridge fixture: provider=${BRIDGE_PROVIDER_NAME}, tools=[${BRIDGE_TOOLS.map((t) => t.name).join(", ")}], agent=${BRIDGE_AGENT_LABEL}`);
+    await ensureAgent(customer.id);
+    await ensureCreditLine(provider.id, customer.id);
+    const agentLabelForLog = mode === "operator" ? OPERATOR_BRIDGE_AGENT_LABEL : BRIDGE_AGENT_LABEL;
+    ok("Stage 1", `bridge fixture: provider=${BRIDGE_PROVIDER_NAME}, tools=[${BRIDGE_TOOLS.map((t) => t.name).join(", ")}], agent=${agentLabelForLog}`);
   }
 
   // ─── STAGE 2 — RECEIPT SELECTION + TOOL MATCH ───
@@ -521,16 +790,17 @@ async function main(args: Args): Promise<void> {
   ok("Stage 2", `tool name match (Tool: ${matchedTool.name} / ${BRIDGE_PROVIDER_NAME})`);
 
   if (args.dryRun) {
-    info("DRY RUN", "would import the following:");
+    info("DRY RUN", `would import the following (${mode} mode):`);
     console.log(JSON.stringify({
+      mode,
       receipt: { id: receipt.id, tool: receipt.tool, amount: receipt.amountCharged },
       mapping: {
-        customerId: debtor.id,
+        customerId: customer.id,
         providerId: provider.id,
-        agentIdentityId: BRIDGE_AGENT_ID,
+        agentIdentityId: agentIdForUsage,
         toolId: matchedTool.id,
       },
-      reserve: { id: demoReserve.id, valueNanoErg: demoReserve.valueNanoErg.toString() },
+      reserve: { id: targetReserve.id, valueNanoErg: targetReserve.valueNanoErg.toString() },
     }, null, 2));
     info("DRY RUN", "skipped: bridge fixture ensure (peek only)");
     info("DRY RUN", "skipped: readiness audit (no obligation state to audit before import)");
@@ -554,15 +824,17 @@ async function main(args: Args): Promise<void> {
     select: { id: true, timestamp: true },
   });
   const liveOb = await prisma.obligationState.findUnique({
-    where: { providerId_customerId: { providerId: provider.id, customerId: debtor.id } },
+    where: { providerId_customerId: { providerId: provider.id, customerId: customer.id } },
     select: { id: true, version: true, currentAmount: true, pendingAmount: true, settlementStatus: true, latestSignature: true },
   });
 
   let bridgeObligationId: string;
   let usageEventId: string;
   let importedDelta: bigint;
+  // 16c: SettlementEvent.reserveId is `string | null` in the Prisma schema;
+  // the prior type narrowed it incorrectly to `string`. Fixed here.
   let priorSettlement:
-    | { id: string; status: string; amount: bigint; reserveId: string; redemptionTxId: string | null }
+    | { id: string; status: string; amount: bigint; reserveId: string | null; redemptionTxId: string | null }
     | null = null;
 
   if (dup && liveOb && liveOb.currentAmount > BigInt(0)) {
@@ -609,25 +881,51 @@ async function main(args: Args): Promise<void> {
   } else {
     ok("Stage 3a", `dedupe pre-check: requestRef=${receipt.id} not yet imported`);
 
+    // 3b. Resolve signing key. In demo mode the tracker-managed
+    // Demo Debtor private key lives in customer.privateKey. In operator
+    // (self-custody) mode the privateKey field is empty by convention; we
+    // read the operator's key from .demo-state/operator-key.json (the same
+    // file 16a-core wrote, mode 0o600).
+    let signingPrivateKey: string;
+    if (mode === "operator") {
+      const opKeyPath = path.join(DEMO_STATE_DIR, "operator-key.json");
+      if (!fs.existsSync(opKeyPath)) {
+        fail("Stage 3b", `operator mode requires ${opKeyPath} (16a-core key file). Not found.`);
+      }
+      const opKey = JSON.parse(fs.readFileSync(opKeyPath, "utf-8")) as { publicKey: string; privateKey: string };
+      if (!opKey.privateKey || !/^[0-9a-f]{64}$/.test(opKey.privateKey)) {
+        fail("Stage 3b", `operator-key.json has invalid or missing privateKey (expected 64-char hex)`);
+      }
+      if (opKey.publicKey !== customer.publicKey) {
+        fail("Stage 3b", `operator-key.json publicKey does not match operator Customer publicKey`);
+      }
+      signingPrivateKey = opKey.privateKey;
+    } else {
+      if (!customer.privateKey) {
+        fail("Stage 3b", `tracker-managed customer privateKey missing (unreachable in demo mode after Stage 0 check)`);
+      }
+      signingPrivateKey = customer.privateKey;
+    }
+
     // 3b. tracker.proposeNoteUpdate.
     const expectedVersion = liveOb?.version ?? 0;
     let trackerOut;
     try {
       trackerOut = await tracker.proposeNoteUpdate(
         {
-          debtorPubKey: debtor.publicKey,
+          debtorPubKey: customer.publicKey,
           creditorPubKey: provider.publicKey,
           delta: BigInt(receipt.amountCharged),
           expectedVersion,
           requestId: receipt.id,
-          agentIdentityId: BRIDGE_AGENT_ID,
-          customerId: debtor.id,
+          agentIdentityId: agentIdForUsage,
+          customerId: customer.id,
           toolId: matchedTool.id,
           toolName: matchedTool.name,
           providerId: provider.id,
           providerName: BRIDGE_PROVIDER_NAME,
         },
-        debtor.privateKey,
+        signingPrivateKey,
       );
     } catch (e) {
       if (e instanceof TrackerError) {
@@ -641,7 +939,7 @@ async function main(args: Args): Promise<void> {
     if (!liveOb) {
       await prisma.obligationState.update({
         where: { id: trackerOut.noteId },
-        data: { customerId: debtor.id, providerId: provider.id },
+        data: { customerId: customer.id, providerId: provider.id },
       });
     }
 
@@ -650,10 +948,10 @@ async function main(args: Args): Promise<void> {
     try {
       usageEvent = await prisma.usageEvent.create({
         data: {
-          agentIdentityId: BRIDGE_AGENT_ID,
+          agentIdentityId: agentIdForUsage,
           toolId: matchedTool.id,
           providerId: provider.id,
-          customerId: debtor.id,
+          customerId: customer.id,
           amountCharged: BigInt(receipt.amountCharged),
           outcome: "success",
           requestRef: receipt.id,
@@ -685,7 +983,7 @@ async function main(args: Args): Promise<void> {
     info("Stage 4", "skipped (resume-verify: already settled)");
   } else {
   info("Stage 4", "running settlement-readiness audit…");
-  const audit = runReadinessAuditSync(demoReserve.id, bridgeObligationId);
+  const audit = runReadinessAuditSync(targetReserve.id, bridgeObligationId);
   const report = parseAuditReport(audit.stdout);
   if (!report) {
     console.error(audit.stdout);
@@ -737,7 +1035,7 @@ async function main(args: Args): Promise<void> {
     settlementEventId = priorSettlement.id;
   } else {
     info("Stage 5", "POST /api/reserves/redeem…");
-    const redeem = await postRedeem(args.baseUrl, demoReserve.id, bridgeObligationId, cookie);
+    const redeem = await postRedeem(args.baseUrl, targetReserve.id, bridgeObligationId, cookie);
     if (redeem.status !== 200) {
       console.error(JSON.stringify(redeem.body, null, 2));
       fail("Stage 5", `redeem returned HTTP ${redeem.status}`);
@@ -784,8 +1082,8 @@ async function main(args: Args): Promise<void> {
   if (redemptionTxId && settlementEvent.redemptionTxId !== redemptionTxId) {
     fail("Stage 6a", `SettlementEvent.redemptionTxId mismatch: expected ${redemptionTxId}, got ${settlementEvent.redemptionTxId}`);
   }
-  if (settlementEvent.reserveId !== demoReserve.id) {
-    fail("Stage 6a", `SettlementEvent.reserveId mismatch: expected ${demoReserve.id}, got ${settlementEvent.reserveId}`);
+  if (settlementEvent.reserveId !== targetReserve.id) {
+    fail("Stage 6a", `SettlementEvent.reserveId mismatch: expected ${targetReserve.id}, got ${settlementEvent.reserveId}`);
   }
   if (settlementEvent.status !== "completed") {
     warn("Stage 6a", `SettlementEvent.status=${settlementEvent.status} (expected "completed")`);
@@ -803,7 +1101,7 @@ async function main(args: Args): Promise<void> {
 
   // Post-redeem audit: previously-blocking #13 / #18 should now be resolved.
   info("Stage 6", "post-redeem readiness re-audit…");
-  const postAudit = runReadinessAuditSync(demoReserve.id, bridgeObligationId);
+  const postAudit = runReadinessAuditSync(targetReserve.id, bridgeObligationId);
   const postReport = parseAuditReport(postAudit.stdout);
   if (postReport) {
     const stillFailing = postReport.checks.filter((c) => c.status === "fail").map((c) => c.id);
@@ -851,7 +1149,8 @@ async function main(args: Args): Promise<void> {
     usageEvent: usageEventId,
     settlementEvent: settlementEvent.id,
     redemptionTxId,
-    reserveId: demoReserve.id,
+    reserveId: targetReserve.id,
+    mode,
   }, null, 2));
 }
 
