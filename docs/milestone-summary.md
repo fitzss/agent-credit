@@ -176,3 +176,20 @@ Run `bash scripts/prove.sh` (39/39). Then open `/pool` in a browser and click th
 ## F. One-Paragraph Framing
 
 Agent Credit is a working governed credit system for autonomous AI agents, built on Ergo blockchain settlement. A debtor locks collateral in a smart contract. Providers extend credit. Agents operate under bounded delegated authority — bound to specific agents, scoped to specific providers, capped at specific amounts, expiring at specific times, all cryptographically signed. Settlement happens on-chain with real Schnorr proofs. The operator manages the full lifecycle from a single pool dashboard that shows reserve health, obligation readiness, agent-bound authority compliance, tracker state, and settlement history. The system is proven with 39 automated regression checks covering positive paths (settlement works, agent-bound authority works), negative paths (invalid authority attempts are rejected without advancing commercial state), and agent-binding enforcement (wrong agent, foreign agent, cross-delegation commit — all rejected). This is not a mockup — the chain is real, the proofs are real, the guardrails are real.
+
+## G. Architecture posture — settlement adapter boundary (slice 17a)
+
+Slice 17a names the seam between Agent Tab's chain-agnostic core
+(obligations, delegations, MCP authority, tracker bookkeeping,
+the credits unit, settlement *facts*) and a chain-specific
+settlement adapter (reserve deployment, on-chain tx verification,
+chain-denomination conversion, secret-file plumbing,
+canonical-refusal identifiers). Today's only adapter is Ergo
+testnet via ChainCash — the first **and reference** settlement
+adapter. There is no working second adapter, no EVM / Cardano /
+multi-chain support, and no schema refactor for multi-chain.
+17b lands the interface + a thin Ergo facade (no behavior
+change); 17c lands Ergo mainnet alpha safety mode on top of that
+seam (one operator, own funds, tiny cap, typed confirmation, no
+custody, no third-party deposits). The full design memo lives at
+[`docs/settlement-adapter-boundary.md`](./settlement-adapter-boundary.md).
